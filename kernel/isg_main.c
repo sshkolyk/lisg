@@ -735,7 +735,7 @@ static int isg_free_session(struct isg_session *is) {
 			if (test_and_clear_bit(ISG_SERVICE_ONLINE, &isrv->info.flags)) {
 				isg_send_event(isrv->isg_net, EVENT_SESS_STOP, isrv, 0, NLMSG_DONE, 0, NULL);
 			}
-			del_timer(&isrv->timer);
+			timer_delete(&isrv->timer);
 		}
 	}
 
@@ -1329,7 +1329,7 @@ static void isg_cleanup(struct isg_net *isg_net) {
 	for (i = 0; i < nr_buckets; i++) {
 		hlist_bl_for_each_entry_safe(is, l, c, &isg_net->hash[i], list) {
 			isg_free_session(is);
-			del_timer(&is->timer);
+			timer_delete(&is->timer);
 			rate = is->rate;
 			rcu_assign_pointer(is->rate, NULL);
 			kfree(is);
