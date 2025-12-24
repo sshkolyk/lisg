@@ -919,7 +919,7 @@ static void isg_session_timeout(unsigned long arg) {
 	struct isg_session *is = (struct isg_session *) arg;
 #else
 static void isg_session_timeout(struct timer_list *arg) {
-	struct isg_session *is = from_timer(is, arg, timer);
+	struct isg_session *is = timer_container_of(is, arg, timer);
 #endif
 	u64 ns_now, stat_duration, idle_nsec, last_seen;
 	struct isg_net_stat *cnt;

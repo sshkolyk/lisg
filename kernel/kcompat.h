@@ -13,4 +13,8 @@
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 4, 0)
 #define register_sysctl(_a, _b) register_sysctl_paths(net_ipt_isg_ctl_path, _b)
 #endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 16, 0)
+#define timer_container_of from_timer
+#endif
 #endif
