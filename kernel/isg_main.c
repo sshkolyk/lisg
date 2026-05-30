@@ -80,9 +80,6 @@ static inline struct isg_net *isg_pernet(struct net *net) {
 	return net_generic(net, isg_net_id);
 }
 
-static struct ctl_table_header *isg_sysctl_hdr;
-static struct ctl_table empty_ctl_table[1];
-
 #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 4, 0)
 struct ctl_path net_ipt_isg_ctl_path[] = {
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,33)
@@ -1394,10 +1391,12 @@ static int __net_init isg_net_init(struct net *net) {
 		cnt->noaccounting = 0;
 	}
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,5,0)
-	isg_net->sysctl_hdr = register_net_sysctl(net, "net/ipt_ISG", table->vars);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,11,0)
+        isg_net->sysctl_hdr = register_net_sysctl_sz(net, "net/ipt_ISG", table->vars, 3);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,5,0)
+        isg_net->sysctl_hdr = register_net_sysctl(net, "net/ipt_ISG", table->vars);
 #else
-	isg_net->sysctl_hdr = register_net_sysctl_table(net, net_ipt_isg_ctl_path, table->vars);
+        isg_net->sysctl_hdr = register_net_sysctl_table(net, net_ipt_isg_ctl_path, table->vars);
 #endif
 	if (isg_net->sysctl_hdr == NULL) {
 		err = -ENOMEM;
@@ -1472,11 +1471,6 @@ static int __init isg_tg_init(void) {
 
 	get_random_bytes(&jhash_rnd, sizeof(jhash_rnd));
 
-	isg_sysctl_hdr = register_sysctl("net/ipt_ISG", empty_ctl_table);
-	if (isg_sysctl_hdr == NULL) {
-		return -ENOMEM;
-	}
-
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,33)
 	err = register_pernet_gen_subsys(&isg_net_id, &isg_net_ops);
 #else /* < 2.6.33 */
@@ -1514,7 +1508,6 @@ static void __exit isg_tg_exit(void) {
 #else /* < 2.6.33 */
 	unregister_pernet_subsys(&isg_net_ops);
 #endif
-	unregister_sysctl_table(isg_sysctl_hdr);
 
 	printk(KERN_INFO "ipt_ISG: Unloaded\n");
 }

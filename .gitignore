@@ -1,0 +1,17 @@
+.claude
+.code
+.idea
+CLAUDE.md
+/ISG/etc/tc.conf
+/ISG/etc/config.pl
+**/*.cmd
+**/*.ko
+**/*.o
+**/*.so
+*.mod
+*.mod.c
+kernel/Module.symvers
+kernel/modules.order
+kernel/build.h
+kernel/Makefile
+/testing
