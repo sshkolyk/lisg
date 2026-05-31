@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import os
 import selectors
@@ -125,6 +126,10 @@ def build(code: str, ev: dict, secret: bytes, rid: int,
         if not pkt.authenticator:
             pkt.authenticator = os.urandom(16)
         pkt['User-Password'] = _encrypt_password(pkt.secret, pkt.authenticator, username)
+        # RFC 3579 / CVE-2024-3596: newer FreeRADIUS requires Message-Authenticator.
+        # Insert a zero placeholder; the real HMAC is computed after the packet is
+        # fully assembled (see send_to_server).
+        pkt['Message-Authenticator'] = b'\x00' * 16
 
     return pkt
 
@@ -148,8 +153,13 @@ def send_to_server(code: str, ev: dict, cfg: Config, conf_key: str, prio: int,
             # make the header authenticator differ from the one used to encrypt
             # User-Password → FreeRADIUS decrypts to garbage.
             attr = pkt._PktEncodeAttributes()
-            data = struct.pack('!BBH', pkt.code, pkt.id, 20 + len(attr)) \
+            raw  = struct.pack('!BBH', pkt.code, pkt.id, 20 + len(attr)) \
                    + pkt.authenticator + attr
+            # Replace the zero-filled Message-Authenticator placeholder with
+            # the real HMAC-MD5(packet, secret) per RFC 3579 §3.2.
+            ma_placeholder = bytes([80, 18]) + b'\x00' * 16
+            ma_real        = bytes([80, 18]) + hmac.new(pkt.secret, raw, hashlib.md5).digest()
+            data = raw.replace(ma_placeholder, ma_real, 1)
         else:
             data = pkt.RequestPacket()
     except Exception as e:
