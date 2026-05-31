@@ -156,21 +156,8 @@ class ISGServer:
                 if m:
                     result.services.setdefault(m.group(2), m.group(1))
 
-        # Rejected with no walled-garden service to apply → DO NOT approve.
-        # An unapproved session keeps flags == 0, and the kernel drops all of
-        # its traffic (isg_main.c: `if (!is->info.flags) goto drop`). We only
-        # cap how long the dead session lingers before the kernel reaps it.
-        if not result.accept and not result.services and not result.dynamic_services:
-            isg.send_only(sk, {
-                'type':         isg.EVENT_SESS_CHANGE,
-                'port_number':  port,
-                'max_duration': self._cfg.unauth_session_max_duration,
-            })
-            log.info("Session '%s' on Virtual%d rejected — no internet "
-                     "(left unapproved)", ip, port)
-            return
-
-        # Register on-the-fly dynamic services with the kernel
+        # Register on-the-fly dynamic services with the kernel (in practice
+        # only produced on accept; harmless when empty on reject).
         for ds in result.dynamic_services:
             if ds.name not in self._cfg.services:
                 self._cfg.services[ds.name] = Service(
@@ -186,8 +173,45 @@ class ISGServer:
             })
             result.services.setdefault(ds.name, 'A')
 
-        # Apply static + dynamic services
-        for svc_name, svc_status in svc_mod.sanitize(self._cfg, result.services).items():
+        # Resolve which services ACTUALLY apply (sanitize drops services that
+        # are unknown / not prepared / class-conflicting).
+        applied = svc_mod.sanitize(self._cfg, result.services)
+
+        # A walled-garden service only counts as a real limiter if it actually
+        # restricts traffic: either it polices (non-zero rate) or it is a
+        # tagger (L4-redirect — traffic is diverted, not let onto the internet).
+        # A policer with rate == 0 does NOT count: the kernel treats rate 0 as
+        # "unlimited" (isg_main.c: `if (… || !rate) accept`), so approving on it
+        # would hand a rejected user full-speed internet — the same fail-open
+        # bug one level deeper.
+        def _limits(name: str) -> bool:
+            svc = self._cfg.services.get(name)
+            return bool(svc and (svc.type == 'tagger' or svc.u_rate or svc.d_rate))
+
+        has_active_service = any(st == 'A' and _limits(n) for n, st in applied.items())
+        has_rate           = len(result.rate_info) == 4
+
+        # FAIL-CLOSED: a rejected session is approved ONLY if a real limiter was
+        # actually applied (an active walled-garden service, or an explicit
+        # rate). If unauth_service_name_list is empty, misspelled, or its
+        # service failed to prepare, `applied` is empty here — so we MUST NOT
+        # approve, or the session would get full-speed internet with no shaper
+        # (the long-standing fail-open bug). Left unapproved, the session keeps
+        # flags == 0 and the kernel drops all its traffic
+        # (isg_main.c: `if (!is->info.flags) goto drop`); we only cap how long
+        # the dead session lingers before the kernel reaps and re-checks it.
+        if not result.accept and not has_active_service and not has_rate:
+            isg.send_only(sk, {
+                'type':         isg.EVENT_SESS_CHANGE,
+                'port_number':  port,
+                'max_duration': self._cfg.unauth_session_max_duration,
+            })
+            log.info("Session '%s' on Virtual%d rejected — no internet "
+                     "(left unapproved)", ip, port)
+            return
+
+        # Apply the resolved services
+        for svc_name, svc_status in applied.items():
             sev = svc_mod.build_event(self._cfg, svc_name)
             sev['type']        = isg.EVENT_SERV_APPLY
             sev['port_number'] = port
