@@ -25,6 +25,7 @@ Commands:
   show_count
   show_session  <IP | Virtual# | Session-ID>
   show_services <IP | Virtual# | Session-ID>
+  monitor       <IP | Virtual# | Session-ID>
   clear         <IP | Virtual# | Session-ID>
   change_rate   <IP | Virtual# | Session-ID> <in_kbps> <out_kbps>
 
@@ -207,6 +208,10 @@ def main():
             if rep['type'] != isg.EVENT_KERNEL_ACK:
                 print('clear: session not found', file=sys.stderr)
                 rc = 1
+
+        elif len(args) == 2 and args[0] == 'monitor':
+            from src import monitor
+            rc = monitor.run(sk, ev, args[1], no_color=_no_color)
 
         elif len(args) == 4 and args[0] == 'change_rate':
             in_r  = int(args[2]) * 1000
