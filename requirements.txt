@@ -4,5 +4,9 @@ pyrad>=2.0
 # ISGd.py / config.py — YAML configuration
 PyYAML>=6.0
 
-# MySQL backend (optional — only needed when backend: mysql)
+# MySQL backend (optional — only needed when type: mysql in auth/accounting pool)
 pymysql>=1.0
+
+# REST API (optional — only needed when api: is configured)
+fastapi>=0.100
+uvicorn>=0.23

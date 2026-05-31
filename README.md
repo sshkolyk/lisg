@@ -1,7 +1,12 @@
-# Linux ISG
-This repo is fork of Linux ISG project from Oleg A. Arkhangelsky.
-
-It is based on a non-original copy of source code recovered from old archive. Previously this code was published under GNU License so there is no problem to restore it in public.
+# Linux ISG with python userspace
+It's fork from https://github.com/vvfedorenko/lisg
+Kernel code - original.
+Userspace rewritten from perl to python.
+Key changes:
+1. Added support for newer radius (Message-Authenticator attribute).
+2. Support for backend mysql in mix with radius.
+3. Optional uvicorn API.
+----------
 
 # Changes
 * Restore (write from scratch) match userspace library because it was lost during recovery.
@@ -22,6 +27,19 @@ iptables -A FORWARD -s 192.0.0.0/24 -j ISG --session-init
 iptables -A FORWARD -d 192.0.0.0/24 -j ISG
 ```
 This commands will advise ISG module to initiate session for every IP address from 192.0.0.0/24 network and to policy traffic to 192.0.0.0/24 network in case of active session
+## Daemon and ISG.py
+install dependencies
+```bash
+cd app
+pip install -r requirements.txt
+cp -n config.yaml.example config.yaml
+cp -n tc.conf.example tc.conf
+```
+Edit config.yaml and run:
+```bash
+python ISGd.py
+python ISG.py
+```
 
 ## Redirect to authorization
 ```bash

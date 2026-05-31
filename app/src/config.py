@@ -53,6 +53,15 @@ class ServerEntry:
 
 
 @dataclass
+class APIConfig:
+    enabled:     bool      = True
+    host:        str       = '0.0.0.0'
+    port:        int       = 8080
+    token:       str       = ''
+    access_list: list[str] = field(default_factory=list)
+
+
+@dataclass
 class MySQLConfig:
     """Query overrides shared by all mysql-type pool entries."""
     auth_query:        str = _DEFAULT_AUTH_QUERY
@@ -101,6 +110,9 @@ class Config:
 
     # MySQL query overrides (shared by all type=mysql entries; connection params are per-entry)
     mysql: Optional[MySQLConfig] = None
+
+    # REST API (optional)
+    api: Optional[APIConfig] = None
 
     # CoA (always RADIUS)
     coa_secret: bytes        = b''
@@ -151,6 +163,19 @@ def load(path: str) -> Config:
             )
         return result
 
+    def parse_api(section) -> Optional[APIConfig]:
+        if not section:
+            return None
+        if not section.get('enabled', True):
+            return None
+        return APIConfig(
+            enabled=True,
+            host=section.get('host', '0.0.0.0'),
+            port=int(section.get('port', 8080)),
+            token=str(section.get('token', '')),
+            access_list=list(section.get('access_list') or []),
+        )
+
     def parse_mysql(section) -> Optional[MySQLConfig]:
         if not section:
             return None
@@ -185,6 +210,7 @@ def load(path: str) -> Config:
         auth=parse_pool(raw.get('auth')),
         accounting=parse_pool(raw.get('accounting')),
         mysql=parse_mysql(raw.get('mysql')),
+        api=parse_api(raw.get('api')),
         coa_secret=to_bytes(raw.get('coa_secret', '')),
         coa_port=int(raw.get('coa_port', 3799)),
         coa_server=raw.get('coa_server'),

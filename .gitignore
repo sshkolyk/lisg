@@ -3,7 +3,7 @@
 .idea
 CLAUDE.md
 /ISG/
-
+/app/tc.conf
 /app/config.yaml
 **/*.cmd
 **/*.ko

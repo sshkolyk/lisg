@@ -15,6 +15,8 @@ from src import services as svc_mod
 from src import tc as tc_mod
 from src.coa_server import CoAServer
 from src.isg_server import ISGServer
+from src.api import APIServer, PreApprovalStore
+from src.api.server import APIContext
 from src.config import Config, load as load_config
 from src.backends.base import Backend
 
@@ -61,10 +63,18 @@ class Daemon:
         self._acct_pool  = _make_pool(cfg, cfg.accounting, self.nas_ip, self.nas_id,
                                       self.rad_dict, log)
         self._stop    = threading.Event()
-        self._coa     = CoAServer(cfg, self.nas_ip, self.nas_id,
-                                  self.rad_dict, self._stop)
-        self._isg     = ISGServer(cfg, self.nas_ip,
-                                  self._auth_pool, self._acct_pool, self._stop)
+        self._coa          = CoAServer(cfg, self.nas_ip, self.nas_id,
+                                       self.rad_dict, self._stop)
+        self._pre_approved = PreApprovalStore()
+        self._isg          = ISGServer(cfg, self.nas_ip,
+                                       self._auth_pool, self._acct_pool,
+                                       self._stop, self._pre_approved)
+        self._api          = APIServer(
+            APIContext(cfg=cfg, nas_ip=self.nas_ip,
+                       auth_pool=self._auth_pool, acct_pool=self._acct_pool,
+                       pre_approved=self._pre_approved),
+            self._stop,
+        ) if cfg.api else None
         self._log     = logging.getLogger('ISGd')
 
     # ── setup ─────────────────────────────────────────────────────────────────
@@ -191,6 +201,10 @@ class Daemon:
             threading.Thread(target=self.job_coa,        name='CoA',        daemon=True),
             threading.Thread(target=self.job_reload_tc,  name='TC_Refresh', daemon=True),
         ]
+        if self._api:
+            threads.append(
+                threading.Thread(target=self._api.run, name='API', daemon=True)
+            )
         for t in threads:
             t.start()
         try:

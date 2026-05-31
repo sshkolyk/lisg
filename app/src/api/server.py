@@ -1,0 +1,153 @@
+"""API server, pre-approval store, and shared context.
+
+FastAPI/uvicorn are imported lazily (inside create_app / run) so that ISGd can
+start without those packages installed when the API is disabled.
+
+NOTE: this module deliberately does NOT use ``from __future__ import annotations``.
+The endpoint type hints (e.g. ``upd: SessionUpdate``) must resolve to real
+objects at function-definition time, because the models are imported locally
+inside ``create_app`` and would otherwise be invisible to FastAPI's
+``get_type_hints`` (which only sees module globals).
+"""
+import logging
+import re
+import threading
+import time
+from dataclasses import dataclass, field
+
+log = logging.getLogger(__name__)
+
+
+# ── pre-approval store ────────────────────────────────────────────────────────
+
+class PreApprovalStore:
+    """Thread-safe set of IPs that should be auto-approved on next connect."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._ips:  set[str] = set()
+
+    def add(self, ip: str) -> None:
+        with self._lock:
+            self._ips.add(ip)
+
+    def consume(self, ip: str) -> bool:
+        """Return True and remove ip if it was pre-approved."""
+        with self._lock:
+            if ip in self._ips:
+                self._ips.discard(ip)
+                return True
+            return False
+
+
+# ── API context (shared state) ────────────────────────────────────────────────
+
+@dataclass
+class APIContext:
+    cfg:          object       # Config (avoid import cycle / typing at runtime)
+    nas_ip:       str
+    auth_pool:    list
+    acct_pool:    list
+    pre_approved: PreApprovalStore
+    started_at:   float = field(default_factory=time.monotonic)
+
+
+def _is_ip(s: str) -> bool:
+    return bool(re.match(r'^\d{1,3}(\.\d{1,3}){3}$', s))
+
+
+# ── FastAPI app factory (lazy imports) ────────────────────────────────────────
+
+def create_app(ctx: APIContext):
+    from fastapi import Depends, FastAPI, HTTPException
+    from .auth import make_auth
+    from .models import SessionInfo, SessionUpdate, StatusInfo, UpdateResult
+    from . import sessions as sess
+
+    api_cfg = ctx.cfg.api
+    auth    = make_auth(api_cfg)
+
+    app = FastAPI(title='ISGd API', version='1.0',
+                  docs_url='/docs', redoc_url=None)
+
+    @app.get('/status', response_model=StatusInfo, dependencies=[Depends(auth)])
+    async def get_status():
+        counts = sess.fetch_counts()
+        return StatusInfo(
+            **counts,
+            uptime_seconds=time.monotonic() - ctx.started_at,
+            auth_backends=[b.__class__.__name__ for b in ctx.auth_pool],
+            acct_backends=[b.__class__.__name__ for b in ctx.acct_pool],
+        )
+
+    @app.get('/sessions', response_model=list[SessionInfo], dependencies=[Depends(auth)])
+    async def list_sessions(limit: int = 100, offset: int = 0):
+        if limit < 1 or limit > 10000:
+            raise HTTPException(status_code=422, detail='limit must be 1–10000')
+        if offset < 0:
+            raise HTTPException(status_code=422, detail='offset must be >= 0')
+        return sess.fetch_all(limit=limit, offset=offset)
+
+    @app.get('/sessions/{id}', response_model=SessionInfo, dependencies=[Depends(auth)])
+    async def get_session(id: str):
+        s = sess.find_session(id)
+        if s is None:
+            raise HTTPException(status_code=404, detail='Session not found')
+        return s
+
+    @app.put('/sessions/{id}', response_model=UpdateResult, dependencies=[Depends(auth)])
+    async def update_session(id: str, upd: SessionUpdate):
+        if upd.approve is None and upd.block is None \
+                and upd.in_kbps is None and upd.out_kbps is None:
+            raise HTTPException(status_code=422, detail='At least one field required')
+
+        s = sess.find_session(id)
+
+        # approve for a not-yet-existing IP session → pre-approve next connect
+        if s is None and upd.approve and _is_ip(id) and not upd.block:
+            ctx.pre_approved.add(id)
+            log.info("API: pre-approved IP '%s' for next connect", id)
+            return UpdateResult(actions=['approve'], pre_approved=True)
+
+        if s is None:
+            raise HTTPException(status_code=404, detail='Session not found')
+
+        return UpdateResult(**sess.apply_update(s, id, upd))
+
+    return app
+
+
+# ── server runner ─────────────────────────────────────────────────────────────
+
+class APIServer:
+    def __init__(self, ctx: APIContext, stop: threading.Event):
+        self._ctx  = ctx
+        self._stop = stop
+
+    def run(self) -> None:
+        try:
+            import uvicorn
+        except ImportError:
+            log.error('fastapi/uvicorn required for API: pip install fastapi uvicorn')
+            return
+
+        try:
+            app = create_app(self._ctx)
+        except ImportError:
+            log.error('fastapi required for API: pip install fastapi uvicorn')
+            return
+
+        api_cfg = self._ctx.cfg.api
+        config  = uvicorn.Config(
+            app, host=api_cfg.host, port=api_cfg.port,
+            log_level='warning', access_log=False,
+        )
+        server = uvicorn.Server(config)
+
+        def _watch_stop():
+            self._stop.wait()
+            server.should_exit = True
+
+        threading.Thread(target=_watch_stop, daemon=True).start()
+        log.info('API server listening on %s:%d', api_cfg.host, api_cfg.port)
+        server.run()

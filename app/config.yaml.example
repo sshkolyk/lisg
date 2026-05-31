@@ -40,6 +40,24 @@ accounting:
 coa_secret: "apple"
 coa_port: 3799
 
+# ── REST API ───────────────────────────────────────────────────────────────
+# Optional HTTP API for status/session management (requires fastapi + uvicorn).
+# api:
+#   enabled: true
+#   host: 0.0.0.0
+#   port: 8080
+#   token: "change-me"        # Bearer token; empty = no token check
+#   access_list:              # optional CIDR allow-list; empty = accept any IP
+#     - 127.0.0.1
+#     - 192.168.0.0/16
+#
+# Endpoints:
+#   GET  /status                  session counts, uptime, backend list
+#   GET  /sessions?limit=&offset= paginated session list
+#   GET  /sessions/{id}           id = ip | mac | session_id
+#   PUT  /sessions/{id}           body: {in_kbps, out_kbps, approve, block}
+#                                 (approve on a non-existent IP pre-approves it)
+
 # ── Session defaults ───────────────────────────────────────────────────────
 session_alive_interval: 60        # Interim-Update interval (seconds; 0 = off)
 session_idle_timeout: 1800        # Inactivity disconnect (seconds)
