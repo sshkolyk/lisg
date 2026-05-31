@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import threading
 
@@ -145,6 +146,29 @@ class ISGServer:
                            sk: socket.socket) -> None:
         port = ev.get('port_number', 0)
         ip   = isg.long2ip(ev.get('ipaddr', 0))
+
+        # On reject, apply the configured walled-garden services — centrally,
+        # for ANY auth backend (RADIUS, MySQL, …). Each entry is "A<name>"
+        # (activate) or "N<name>" (deactivate).
+        if not result.accept:
+            for entry in (self._cfg.unauth_service_name_list or []):
+                m = re.match(r'^(A|N)(.+)', str(entry))
+                if m:
+                    result.services.setdefault(m.group(2), m.group(1))
+
+        # Rejected with no walled-garden service to apply → DO NOT approve.
+        # An unapproved session keeps flags == 0, and the kernel drops all of
+        # its traffic (isg_main.c: `if (!is->info.flags) goto drop`). We only
+        # cap how long the dead session lingers before the kernel reaps it.
+        if not result.accept and not result.services and not result.dynamic_services:
+            isg.send_only(sk, {
+                'type':         isg.EVENT_SESS_CHANGE,
+                'port_number':  port,
+                'max_duration': self._cfg.unauth_session_max_duration,
+            })
+            log.info("Session '%s' on Virtual%d rejected — no internet "
+                     "(left unapproved)", ip, port)
+            return
 
         # Register on-the-fly dynamic services with the kernel
         for ds in result.dynamic_services:

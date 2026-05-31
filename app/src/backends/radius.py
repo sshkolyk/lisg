@@ -141,10 +141,9 @@ class RadiusBackend(Backend):
                 result.cookie = str(cls_attr)[:32]
 
         elif code == 'Access-Reject':
-            for entry in (self._cfg.unauth_service_name_list or []):
-                m = re.match(r'^(A|N)(.+)', str(entry))
-                if m:
-                    result.services[m.group(2)] = m.group(1)
+            # result.accept stays False; the walled-garden services from
+            # cfg.unauth_service_name_list are applied centrally in isg_server.
+            pass
         else:
             log.error("Unexpected RADIUS reply code '%s'", code)
 

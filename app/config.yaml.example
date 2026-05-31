@@ -64,9 +64,39 @@ session_idle_timeout: 1800        # Inactivity disconnect (seconds)
 session_max_duration: 86400       # Hard session limit (seconds)
 unauth_session_max_duration: 60   # Lifetime of an unauthenticated session
 
-# Services applied when RADIUS rejects (list of "A<name>" or "N<name>" strings)
+# ── Behaviour for UNAUTHORISED sessions (rejected / not found in DB) ────────
+# A subscriber whose IP is not found by the auth backend gets a "reject".
+# What happens then depends on unauth_service_name_list below.
+#
+# Variant A — NO internet at all (default):
+#   Leave unauth_service_name_list empty/commented out. The session is left
+#   UNAPPROVED (flags == 0) and the kernel drops all of its traffic. The
+#   subscriber gets nothing until added to the DB.
+#   unauth_session_max_duration (above) = how often a rejected session is
+#   reaped and re-checked against the DB, so a freshly-added client gets
+#   online within that many seconds.
+#
+# Variant B — microscopic speed / walled garden:
+#   Apply a tiny-rate service covering ALL traffic, so unauthorised users have
+#   a barely-usable link (e.g. just enough to load a "please pay" page).
+#     1. Define a low-rate service on the ALL_OTHER catch-all class
+#        (rate_info numbers are in bits/s):
+#
+#          services:
+#            UNAUTH_SLOW:
+#              rate_info: "QD;8000;2000;U;8000;2000"   # ~8 kbit/s down & up
+#              traffic_classes: [ALL_OTHER]            # must exist in tc.conf
+#
+#     2. Activate it for rejected sessions ("A" = activate, "N" = deactivate):
+#
+#          unauth_service_name_list:
+#            - AUNAUTH_SLOW
+#
+#   Lower the rate_info numbers for an even slower link (1000 = 1 kbit/s).
+#
+# Services applied when the auth backend rejects ("A<name>" / "N<name>"):
 # unauth_service_name_list:
-#   - AREDIRECT
+#   - AUNAUTH_SLOW       # Variant B  (or e.g. AREDIRECT for an L4-redirect service)
 
 # Suppress all RADIUS accounting (even Start/Stop)
 # no_accounting: true
@@ -149,3 +179,11 @@ services:
     alive_interval: 120
     idle_timeout: 600
     max_duration: 10000
+
+  # Walled-garden service for unauthorised users (Variant B above).
+  # Tiny rate on the ALL_OTHER catch-all class → ~8 kbit/s on all traffic.
+  # Enable by adding "AUNAUTH_SLOW" to unauth_service_name_list.
+  # UNAUTH_SLOW:
+  #   rate_info: "QD;8000;2000;U;8000;2000"
+  #   traffic_classes: [ALL_OTHER]
+  #   no_accounting: true
