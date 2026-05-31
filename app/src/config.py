@@ -67,6 +67,7 @@ class Config:
     unauth_session_max_duration: int = 60
     unauth_service_name_list:    list[str] = field(default_factory=list)
     no_accounting:               bool = False
+    no_color_output:             bool = False
     tc_check_interval:           int  = 300
 
     # service definitions
@@ -129,6 +130,7 @@ def load(path: str) -> Config:
         unauth_session_max_duration=int(raw.get('unauth_session_max_duration', 60)),
         unauth_service_name_list=list(raw.get('unauth_service_name_list') or []),
         no_accounting=bool(raw.get('no_accounting', False)),
+        no_color_output=bool(raw.get('no_color_output', False)),
         tc_check_interval=int(raw.get('tc_check_interval', 300)),
         services=services,
     )

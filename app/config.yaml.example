@@ -43,6 +43,25 @@ unauth_session_max_duration: 60   # Lifetime of an unauthenticated session
 # Suppress all RADIUS accounting (even Start/Stop)
 # no_accounting: true
 
+# Disable ANSI color codes in ISG.py output
+# no_color_output: true
+
+# Columns shown by ISG.py (default: all, in this order)
+# Remove or comment out any entry to hide that column.
+# columns:
+#   - user_ip
+#   - mac
+#   - nat_ip
+#   - port
+#   - session_id
+#   - duration
+#   - octets_in
+#   - octets_out
+#   - rate_in
+#   - rate_out
+#   - service
+#   - flags
+
 # Reload tc.conf when its checksum changes, checked every N seconds
 tc_check_interval: 300
 

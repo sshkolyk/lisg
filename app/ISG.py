@@ -8,7 +8,13 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from src import isg
 
-FMT = '{:<15} {:<15} {:<13} {:<16} {:<7} {:<10} {:<10} {:<10} {:<10} {:<16} {:<5}'
+# Set to True to suppress all ANSI escape codes (via --no-color or config)
+_no_color: bool = False
+
+
+def _c(code: str, text: str) -> str:
+    return text if _no_color else f'\033[{code}m{text}\033[0m'
+
 
 USAGE = """\
 Usage: {prog} [command [target]]
@@ -22,23 +28,134 @@ Commands:
   clear         <IP | Virtual# | Session-ID>
   change_rate   <IP | Virtual# | Session-ID> <in_kbps> <out_kbps>
 
+Options:
+  --no-color    Disable ANSI color output
+
 Flags: A approved  X not-approved  S service  O svc-on  U online  T tagger  Z no-acct
 """
+
+# ── formatting helpers ────────────────────────────────────────────────────────
+
+_arp_table: dict = {}
+
+
+def _load_arp_table() -> None:
+    try:
+        with open('/proc/net/arp') as f:
+            next(f)
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 4:
+                    _arp_table[parts[0]] = parts[3]
+    except OSError:
+        pass
+
+
+def get_mac(ip: str) -> str:
+    if not _arp_table:
+        _load_arp_table()
+    mac = _arp_table.get(ip)
+    return mac if mac else _c('31', 'Not found')
+
+
+def format_duration(seconds: int) -> str:
+    d = seconds // 86400
+    h = (seconds % 86400) // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    return f'{d:3d}d{_c("33", f"{h:02d}:{m:02d}:{s:02d}")}'
+
+
+def format_octets(b: int) -> str:
+    G, r = divmod(b, 1_000_000_000)
+    M, r = divmod(r, 1_000_000)
+    K, r = divmod(r, 1_000)
+    return f'{G:8d}g{M:03d}.{K:03d}.{r:03d}'
+
+
+def format_rate(rate: int) -> str:
+    if rate >= 1_000_000_000:
+        return f'{rate / 1_000_000_000:.3g}G'
+    if rate >= 1_000_000:
+        return f'{rate / 1_000_000:.3g}M'
+    if rate >= 1_000:
+        return f'{rate / 1_000:.3g}K'
+    return str(rate)
 
 
 def sprint_flags(ev: dict) -> str:
     f = ev.get('flags', 0)
     if not f:
-        return 'X'
-    s = 'S' if (f & isg.IS_SERVICE) else ('A' if (f & isg.IS_APPROVED_SESSION) else '')
-    s += 'O' if (f & isg.SERVICE_STATUS_ON)   else ''
-    s += 'U' if (f & isg.SERVICE_ONLINE)      else ''
-    s += 'Z' if (f & isg.NO_ACCT)             else ''
-    s += 'T' if (f & isg.SERVICE_TAGGER)      else ''
-    return s or 'X'
+        return _c('31', '✗') + ' X'
+    if f & isg.IS_SERVICE:
+        emoji, s = '', 'S'
+    elif f & isg.IS_APPROVED_SESSION:
+        emoji, s = _c('32', '✔') + ' ', 'A'
+    else:
+        emoji, s = '', ''
+    s += 'O' if (f & isg.SERVICE_STATUS_ON) else ''
+    s += 'U' if (f & isg.SERVICE_ONLINE)    else ''
+    s += 'Z' if (f & isg.NO_ACCT)           else ''
+    s += 'T' if (f & isg.SERVICE_TAGGER)    else ''
+    return (emoji + s) if (emoji or s) else 'X'
 
 
-def parse_target(arg: str, ev: dict):
+# ── column definitions ────────────────────────────────────────────────────────
+# Each entry: (key, header, visible_width, value_fn)
+# visible_width=0 means last column — no trailing padding applied.
+
+COLUMN_DEFS: list = [
+    ('user_ip',    'User IP',                      15, lambda e: isg.long2ip(e['ipaddr'])),
+    ('mac',        'MAC Address',                  17, lambda e: get_mac(isg.long2ip(e['ipaddr']))),
+    ('nat_ip',     'NAT IP',                       15, lambda e: isg.long2ip(e['nat_ipaddr'])),
+    ('port',       'Port',                         13, lambda e: 'Virtual' + str(e['port_number'])),
+    ('session_id', 'Session-ID',                   16, lambda e: e['session_id']),
+    ('duration',   '  Duration',                   12, lambda e: format_duration(e['duration'])),
+    ('octets_in',  '       Octets-in',             20, lambda e: format_octets(e['in_bytes'])),
+    ('octets_out', '       Octets-out',            20, lambda e: format_octets(e['out_bytes'])),
+    ('rate_in',    'Rate-in',                       7, lambda e: format_rate(e['in_rate'])),
+    ('rate_out',   'Rate-out',                      8, lambda e: format_rate(e['out_rate'])),
+    ('service',    'Service',                      16, lambda e: e.get('service_name') or 'Main session'),
+    ('flags',      'Flags',                         0, sprint_flags),
+]
+
+ALL_COLUMNS: list = [k for k, *_ in COLUMN_DEFS]
+
+_ANSI_RE = re.compile(r'\033\[[0-9;]*m')
+
+
+def _pad(s: str, width: int) -> str:
+    """Left-align s to visible width, accounting for invisible ANSI codes."""
+    visible = len(_ANSI_RE.sub('', s))
+    return s + ' ' * max(0, width - visible)
+
+
+def _print_table(rows: list, active: list) -> None:
+    col_map = {k: (h, w, fn) for k, h, w, fn in COLUMN_DEFS}
+    cols = [k for k in ALL_COLUMNS if k in active]
+
+    # Header
+    parts = []
+    for i, key in enumerate(cols):
+        h, w, _ = col_map[key]
+        parts.append(_pad(h, w) if i < len(cols) - 1 else h)
+    print(' '.join(parts))
+
+    # Rows
+    for e in rows:
+        if e['type'] != isg.EVENT_SESS_INFO or not e['ipaddr']:
+            continue
+        parts = []
+        for i, key in enumerate(cols):
+            _, w, fn = col_map[key]
+            val = str(fn(e))
+            parts.append(_pad(val, w) if i < len(cols) - 1 else val)
+        print(' '.join(parts))
+
+
+# ── misc ──────────────────────────────────────────────────────────────────────
+
+def parse_target(arg: str, ev: dict) -> None:
     m = re.match(r'^Virtual(\d+)$', arg)
     if m:
         ev['port_number'] = int(m.group(1))
@@ -49,14 +166,36 @@ def parse_target(arg: str, ev: dict):
 
 
 def main():
+    global _no_color
+
+    raw_args = sys.argv[1:]
+    cli_no_color = '--no-color' in raw_args or '--no-colour' in raw_args
+    args = [a for a in raw_args if a not in ('--no-color', '--no-colour')]
+
+    # Read settings from config.yaml if present alongside this script
+    active_columns = list(ALL_COLUMNS)
+    conf_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+    if os.path.isfile(conf_path):
+        try:
+            import yaml
+            with open(conf_path) as _f:
+                _cfg = yaml.safe_load(_f) or {}
+            _no_color = bool(_cfg.get('no_color_output', False))
+            if 'columns' in _cfg and isinstance(_cfg['columns'], list):
+                active_columns = [c for c in _cfg['columns'] if c in ALL_COLUMNS]
+        except Exception:
+            pass
+
+    if cli_no_color:
+        _no_color = True
+
     try:
         sk = isg.open_socket()
     except OSError as e:
         sys.exit(f'Cannot open netlink socket: {e}')
 
-    args = sys.argv[1:]
-    ev   = {}
-    rc   = 0
+    ev = {}
+    rc = 0
 
     if len(args) >= 2:
         parse_target(args[1], ev)
@@ -70,10 +209,10 @@ def main():
                 rc = 1
 
         elif len(args) == 4 and args[0] == 'change_rate':
-            in_r = int(args[2]) * 1000
+            in_r  = int(args[2]) * 1000
             out_r = int(args[3]) * 1000
             ev.update(type=isg.EVENT_SESS_CHANGE,
-                      in_rate=in_r,  in_burst=int(in_r  * 1.5),
+                      in_rate=in_r,   in_burst=int(in_r  * 1.5),
                       out_rate=out_r, out_burst=int(out_r * 1.5))
             rep = isg.send_event(sk, ev)
             if rep['type'] != isg.EVENT_KERNEL_ACK:
@@ -105,24 +244,8 @@ def main():
             elif not rows:
                 print('No active sessions.')
             else:
-                print(FMT.format('User IP', 'NAT IP', 'Port', 'Session-ID',
-                                 'Dur.', 'In-bytes', 'Out-bytes',
-                                 'Rate-in', 'Rate-out', 'Service', 'Flags'))
-                for e in rows:
-                    if e['type'] == isg.EVENT_SESS_INFO and e['ipaddr']:
-                        print(FMT.format(
-                            isg.long2ip(e['ipaddr']),
-                            isg.long2ip(e['nat_ipaddr']),
-                            'Virtual' + str(e['port_number']),
-                            e['session_id'],
-                            e['duration'],
-                            e['in_bytes'],
-                            e['out_bytes'],
-                            e['in_rate'],
-                            e['out_rate'],
-                            e.get('service_name') or 'Main session',
-                            sprint_flags(e),
-                        ))
+                _print_table(rows, active_columns)
+
         else:
             print(USAGE.format(prog=sys.argv[0]), file=sys.stderr)
             rc = 1

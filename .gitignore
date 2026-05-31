@@ -2,8 +2,9 @@
 .code
 .idea
 CLAUDE.md
-/ISG/etc/tc.conf
-/ISG/etc/config.pl
+/ISG/
+
+/app/config.yaml
 **/*.cmd
 **/*.ko
 **/*.o
