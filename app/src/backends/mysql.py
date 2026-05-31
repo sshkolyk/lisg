@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import logging
-import re
 import threading
-from typing import Optional
 
 from .. import isg
-from .. import services as svc_mod
 from ..config import Config, ServerEntry
-from .base import AuthResult, Backend, BackendUnavailable, DynamicService
+from .base import AuthResult, Backend, BackendUnavailable, apply_account_info
 
 log = logging.getLogger(__name__)
 
@@ -163,33 +160,13 @@ class MySQLBackend(Backend):
 
         result = AuthResult(accept=True)
 
-        # ── Cisco-Account-Info (cisco-avpair column) ──────────────────────────
+        # ── Cisco-Account-Info (cisco-avpair column, comma-separated) ─────────
         # Accepts column names: cisco-avpair, cisco_avpair, cisco_account_info
         cai = (row.get('cisco-avpair') or
                row.get('cisco_avpair') or
                row.get('cisco_account_info') or '')
         if cai:
-            import hashlib as _hashlib
-            for val in str(cai).split(','):
-                val = val.strip()
-                if not val:
-                    continue
-                m = re.match(r'^(A|N)(.+)', val)
-                if m:
-                    result.services[m.group(2)] = m.group(1)
-                elif re.match(r'^QC;', val, re.I):
-                    m2 = re.match(r'^QC;([^;]+)', val, re.I)
-                    if m2:
-                        cls  = m2.group(1)
-                        dyn  = 'DYN_' + _hashlib.md5(val.encode()).hexdigest()[:16].upper()
-                        result.dynamic_services.append(
-                            DynamicService(name=dyn, traffic_class=cls, rate_info=val))
-                elif val.upper().startswith('Q'):
-                    parsed = svc_mod.parse_qos(val)
-                    if len(parsed) == 4:
-                        result.rate_info = parsed
-                else:
-                    log.error("Unknown Cisco-Account-Info value '%s'", val)
+            apply_account_info(result, str(cai).split(','))
 
         # ── standard session columns ──────────────────────────────────────────
         nat = row.get('nat_ip')

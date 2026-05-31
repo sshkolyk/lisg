@@ -6,9 +6,14 @@ pool rather than treating the session as rejected.
 """
 from __future__ import annotations
 
+import hashlib
+import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 
 class BackendUnavailable(Exception):
@@ -44,6 +49,39 @@ class AuthResult:
 
     # On-the-fly services declared by the backend (RADIUS QC; or DB rows)
     dynamic_services: list = field(default_factory=list)
+
+
+def apply_account_info(result: AuthResult, values: list) -> None:
+    """
+    Parse Cisco-Account-Info value strings into an AuthResult.
+
+    Shared by every backend (RADIUS attributes, MySQL column, …) so the
+    interpretation is identical no matter where the values come from:
+
+      A<name> / N<name>  — activate / deactivate a named service
+      QC;<class>;…       — on-the-fly per-class dynamic service
+      Q…  (QD/QU/…)      — session rate override (Cisco QoS string)
+    """
+    from .. import services as svc_mod   # local import avoids any import cycle
+    for raw in values:
+        val = str(raw).strip()
+        if not val:
+            continue
+        m = re.match(r'^(A|N)(.+)', val)
+        if m:
+            result.services[m.group(2)] = m.group(1)
+        elif re.match(r'^QC;', val, re.I):
+            m2 = re.match(r'^QC;([^;]+)', val, re.I)
+            if m2:
+                dyn = 'DYN_' + hashlib.md5(val.encode()).hexdigest()[:16].upper()
+                result.dynamic_services.append(
+                    DynamicService(name=dyn, traffic_class=m2.group(1), rate_info=val))
+        elif val.upper().startswith('Q'):
+            parsed = svc_mod.parse_qos(val)
+            if len(parsed) == 4:
+                result.rate_info = parsed
+        else:
+            log.error("Unknown Cisco-Account-Info value '%s'", val)
 
 
 class Backend(ABC):

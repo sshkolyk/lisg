@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
-import re
 import socket
 import struct
 import threading
@@ -17,9 +16,8 @@ except ImportError:
 
 from .. import isg
 from .. import radius_packet as rad
-from .. import services as svc_mod
 from ..config import Config, ServerEntry
-from .base import AuthResult, Backend, BackendUnavailable, DynamicService
+from .base import AuthResult, Backend, BackendUnavailable, apply_account_info
 
 log = logging.getLogger(__name__)
 
@@ -110,22 +108,7 @@ class RadiusBackend(Backend):
 
         if code == 'Access-Accept':
             result.accept = True
-            for ai in (pkt.get('Cisco-Account-Info') or []):
-                ai = str(ai)
-                m = re.match(r'^(A|N)(.+)', ai)
-                if m:
-                    result.services[m.group(2)] = m.group(1)
-                elif re.match(r'^QC;', ai, re.I):
-                    m2 = re.match(r'^QC;([^;]+)', ai, re.I)
-                    if m2:
-                        cls = m2.group(1)
-                        dyn = 'DYN_' + hashlib.md5(ai.encode()).hexdigest()[:16].upper()
-                        result.dynamic_services.append(
-                            DynamicService(name=dyn, traffic_class=cls, rate_info=ai))
-                elif ai.upper().startswith('Q'):
-                    result.rate_info = svc_mod.parse_qos(ai)
-                else:
-                    log.error("Unknown Cisco-Account-Info '%s'", ai)
+            apply_account_info(result, pkt.get('Cisco-Account-Info') or [])
 
             nat_ip = rad.attr_get(pkt, 'Framed-IP-Address')
             if nat_ip is not None:
