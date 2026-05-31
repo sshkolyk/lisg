@@ -1,0 +1,5 @@
+# ISGd.py — RADIUS packet building and parsing
+pyrad>=2.0
+
+# ISGd.py / config.py — YAML configuration
+PyYAML>=6.0

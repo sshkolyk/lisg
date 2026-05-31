@@ -1,0 +1,61 @@
+# ISGd configuration
+# Paths are relative to this file's directory.
+
+daemonize: false
+debug: true
+pid_file: /var/run/ISGd.pid
+log_facility: local7
+
+radius_dictionary: raddb/dictionary   # .cisco extension loaded automatically
+
+tc_file: tc.conf
+
+# ── RADIUS servers ─────────────────────────────────────────────────────────
+# Priority 0 is tried first; on failure the next priority is tried.
+radius_auth:
+  0: {server: "127.0.0.1:1812", timeout: 5, secret: "apple"}
+
+radius_acct:
+  0: {server: "127.0.0.1:1813", timeout: 5, secret: "apple"}
+
+# Optional: override NAS-IP-Address sent in RADIUS (default: auto-detected).
+# Useful when gethostbyname() returns a loopback or wrong address.
+# nas_ip: 192.168.1.1
+
+# Optional: override the NAS-Identifier sent in RADIUS (default: NAS IP).
+# nas_identifier: lISG
+
+# ── CoA / Disconnect ───────────────────────────────────────────────────────
+# coa_server: "127.0.0.1"    # restrict to one IP; comment out = accept any
+coa_secret: "apple"
+coa_port: 3799
+
+# ── Session defaults ───────────────────────────────────────────────────────
+session_alive_interval: 60        # Interim-Update interval (seconds; 0 = off)
+session_idle_timeout: 1800        # Inactivity disconnect (seconds)
+session_max_duration: 86400       # Hard session limit (seconds)
+unauth_session_max_duration: 60   # Lifetime of an unauthenticated session
+
+# Services applied when RADIUS rejects (list of "A<name>" or "N<name>" strings)
+# unauth_service_name_list:
+#   - AREDIRECT
+
+# Suppress all RADIUS accounting (even Start/Stop)
+# no_accounting: true
+
+# Reload tc.conf when its checksum changes, checked every N seconds
+tc_check_interval: 300
+
+# ── Service definitions ────────────────────────────────────────────────────
+# rate_info: Cisco-Account-Info string
+#   QD;<dl_kbps>;<dl_burst>;U;<ul_kbps>;<ul_burst>
+# type: policer (default) | tagger
+#   tagger services match the 'isg' iptables match but do not police traffic.
+services:
+  TESTSERV:
+    rate_info: "QD;512000;96000;U;512000;96000"
+    traffic_classes: [OUR_LOCAL, PEERING]
+    # no_accounting: true
+    alive_interval: 120
+    idle_timeout: 600
+    max_duration: 10000
