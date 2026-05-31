@@ -16,7 +16,7 @@ except ImportError:
     raise ImportError('pyrad required: pip install pyrad')
 
 from .. import isg
-from .. import radius as rad
+from .. import radius_packet as rad
 from .. import services as svc_mod
 from ..config import Config, ServerEntry
 from .base import AuthResult, Backend, BackendUnavailable, DynamicService
