@@ -7,12 +7,45 @@ from typing import Optional
 
 import yaml
 
+_DEFAULT_AUTH_QUERY = (
+    "SELECT 1 AS accepted, `cisco-avpair` "
+    "FROM radius_clients WHERE ip = %(ip)s LIMIT 1"
+)
+_DEFAULT_ACCT_START = (
+    "INSERT INTO radacct "
+    "(acctsessionid, username, nasipaddress, nasportid, acctstarttime, framedipaddress) "
+    "VALUES (%(session_id)s, %(ip)s, %(nas_ip)s, %(port_number)s, NOW(), %(nat_ip)s) "
+    "ON DUPLICATE KEY UPDATE acctstarttime = NOW()"
+)
+_DEFAULT_ACCT_UPDATE = (
+    "UPDATE radacct SET acctsessiontime = %(duration)s, "
+    "acctinputoctets = %(in_bytes)s, acctoutputoctets = %(out_bytes)s "
+    "WHERE acctsessionid = %(session_id)s"
+)
+_DEFAULT_ACCT_STOP = (
+    "UPDATE radacct SET acctstoptime = NOW(), "
+    "acctsessiontime = %(duration)s, "
+    "acctinputoctets = %(in_bytes)s, acctoutputoctets = %(out_bytes)s "
+    "WHERE acctsessionid = %(session_id)s"
+)
+
 
 @dataclass
-class RadiusServer:
-    server: str
-    secret: bytes
-    timeout: int = 5
+class ServerEntry:
+    """One entry in the auth or accounting pool."""
+    type:    str   = 'radius'   # 'radius' | 'mysql'
+
+    # RADIUS-specific
+    server:  str   = ''
+    secret:  bytes = b''
+    timeout: int   = 5
+
+    # MySQL connection (per-entry; allows different DB servers for auth/acct)
+    host:     str = ''
+    port:     int = 3306
+    user:     str = ''
+    password: str = ''
+    database: str = ''
 
     def host_port(self) -> tuple[str, int]:
         host, _, port = self.server.rpartition(':')
@@ -20,15 +53,23 @@ class RadiusServer:
 
 
 @dataclass
+class MySQLConfig:
+    """Query overrides shared by all mysql-type pool entries."""
+    auth_query:        str = _DEFAULT_AUTH_QUERY
+    acct_start_query:  str = _DEFAULT_ACCT_START
+    acct_update_query: str = _DEFAULT_ACCT_UPDATE
+    acct_stop_query:   str = _DEFAULT_ACCT_STOP
+
+
+@dataclass
 class Service:
     traffic_classes: list[str]
     rate_info: str          = ''
-    type: str               = 'policer'   # 'policer' | 'tagger'
+    type: str               = 'policer'
     no_accounting: bool     = False
     alive_interval: Optional[int] = None
     idle_timeout:   Optional[int] = None
     max_duration:   Optional[int] = None
-    # filled by services.prepare():
     u_rate:  int = 0
     u_burst: int = 0
     d_rate:  int = 0
@@ -47,18 +88,24 @@ class Config:
     log_facility: str  = 'local7'
     pid_file:     str  = '/var/run/ISGd.pid'
 
-    # NAS identity (defaults to local IP / hostname)
-    nas_ip:         Optional[str] = None   # override auto-detected NAS-IP-Address
+    # NAS identity
+    nas_ip:         Optional[str] = None
     nas_identifier: Optional[str] = None
 
-    # RADIUS server pools  {priority_int: RadiusServer}
-    radius_auth: dict[int, RadiusServer] = field(default_factory=dict)
-    radius_acct: dict[int, RadiusServer] = field(default_factory=dict)
+    # Auth and accounting pools — each entry specifies its own type
+    # {priority: ServerEntry}; tried in ascending priority order.
+    # Auth:       first entry that returns a result wins.
+    # Accounting: all entries are called (side by side).
+    auth:       dict[int, ServerEntry] = field(default_factory=dict)
+    accounting: dict[int, ServerEntry] = field(default_factory=dict)
 
-    # CoA
+    # MySQL query overrides (shared by all type=mysql entries; connection params are per-entry)
+    mysql: Optional[MySQLConfig] = None
+
+    # CoA (always RADIUS)
     coa_secret: bytes        = b''
     coa_port:   int          = 3799
-    coa_server: Optional[str] = None   # restrict to one IP; None = any
+    coa_server: Optional[str] = None
 
     # session defaults
     session_alive_interval:      int = 60
@@ -70,7 +117,6 @@ class Config:
     no_color_output:             bool = False
     tc_check_interval:           int  = 300
 
-    # service definitions
     services: dict[str, Service] = field(default_factory=dict)
 
 
@@ -88,15 +134,32 @@ def load(path: str) -> Config:
     def to_bytes(s) -> bytes:
         return s.encode() if isinstance(s, str) else (s or b'')
 
-    def parse_servers(section: dict) -> dict[int, RadiusServer]:
+    def parse_pool(section) -> dict[int, ServerEntry]:
         result = {}
-        for prio, srv in (section or {}).items():
-            result[int(prio)] = RadiusServer(
-                server=srv['server'],
-                secret=to_bytes(srv['secret']),
-                timeout=int(srv.get('timeout', 5)),
+        for prio, entry in (section or {}).items():
+            t = entry.get('type', 'radius')
+            result[int(prio)] = ServerEntry(
+                type=t,
+                server=entry.get('server', ''),
+                secret=to_bytes(entry.get('secret', '')),
+                timeout=int(entry.get('timeout', 5)),
+                host=entry.get('host', ''),
+                port=int(entry.get('port', 3306)),
+                user=entry.get('user', ''),
+                password=str(entry.get('password', '')),
+                database=entry.get('database', ''),
             )
         return result
+
+    def parse_mysql(section) -> Optional[MySQLConfig]:
+        if not section:
+            return None
+        return MySQLConfig(
+            auth_query=section.get('auth_query', _DEFAULT_AUTH_QUERY),
+            acct_start_query=section.get('acct_start_query', _DEFAULT_ACCT_START),
+            acct_update_query=section.get('acct_update_query', _DEFAULT_ACCT_UPDATE),
+            acct_stop_query=section.get('acct_stop_query', _DEFAULT_ACCT_STOP),
+        )
 
     services = {}
     for name, svc in (raw.get('services') or {}).items():
@@ -119,8 +182,9 @@ def load(path: str) -> Config:
         log_facility=raw.get('log_facility', 'local7'),
         nas_ip=raw.get('nas_ip'),
         nas_identifier=raw.get('nas_identifier'),
-        radius_auth=parse_servers(raw.get('radius_auth')),
-        radius_acct=parse_servers(raw.get('radius_acct')),
+        auth=parse_pool(raw.get('auth')),
+        accounting=parse_pool(raw.get('accounting')),
+        mysql=parse_mysql(raw.get('mysql')),
         coa_secret=to_bytes(raw.get('coa_secret', '')),
         coa_port=int(raw.get('coa_port', 3799)),
         coa_server=raw.get('coa_server'),

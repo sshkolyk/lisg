@@ -10,13 +10,23 @@ radius_dictionary: raddb/dictionary   # .cisco extension loaded automatically
 
 tc_file: tc.conf
 
-# ── RADIUS servers ─────────────────────────────────────────────────────────
-# Priority 0 is tried first; on failure the next priority is tried.
-radius_auth:
-  0: {server: "127.0.0.1:1812", timeout: 5, secret: "apple"}
+# ── Auth and accounting pools ──────────────────────────────────────────────
+# Each entry requires a `type` field: 'radius' (default) or 'mysql'.
+#
+# Auth:       entries are tried in ascending priority order; the first that
+#             returns a result (accept OR reject) wins.  BackendUnavailable
+#             (timeout, network error, DB down) moves to the next entry.
+#
+# Accounting: ALL entries receive every record simultaneously.
+#             Useful for logging to both RADIUS and MySQL at once.
 
-radius_acct:
-  0: {server: "127.0.0.1:1813", timeout: 5, secret: "apple"}
+auth:
+  0: {type: radius, server: "127.0.0.1:1812", timeout: 5, secret: "apple"}
+  # 1: {type: mysql, host: 127.0.0.1, port: 3306, user: isg, password: secret, database: billing}
+
+accounting:
+  0: {type: radius, server: "127.0.0.1:1813", timeout: 5, secret: "apple"}
+  # 1: {type: mysql, host: 127.0.0.1, port: 3306, user: isg, password: secret, database: billing}
 
 # Optional: override NAS-IP-Address sent in RADIUS (default: auto-detected).
 # Useful when gethostbyname() returns a loopback or wrong address.
@@ -61,6 +71,49 @@ unauth_session_max_duration: 60   # Lifetime of an unauthenticated session
 #   - rate_out
 #   - service
 #   - flags
+
+# ── MySQL query overrides ──────────────────────────────────────────────────
+# Connection params (host, port, user, password, database) are set per-entry
+# in the auth/accounting pools above.
+# This section overrides the default SQL queries for ALL mysql-type entries.
+#
+# Available %(name)s params for auth_query:
+#   %(ip)s, %(nas_ip)s
+# Available params for acct_*_query:
+#   %(session_id)s, %(ip)s, %(nat_ip)s, %(port_number)s,
+#   %(duration)s, %(in_bytes)s, %(out_bytes)s,
+#   %(in_packets)s, %(out_packets)s, %(nas_ip)s, %(nas_id)s, %(acct_type)s
+#
+# Auth query result columns (all optional; non-empty row = accepted):
+#   accepted (0/1)
+#   cisco-avpair / cisco_avpair / cisco_account_info
+#                    — Cisco-Account-Info string, comma-separated for multiple.
+#                      Parsed identically to RADIUS:
+#                        A<name> / N<name>  activate/deactivate service
+#                        QD;<dl>;…;U;<ul>;… session rate override
+#                        QC;<class>;…       dynamic per-class service
+#   nat_ip           — Framed-IP-Address
+#   alive_interval, max_duration, idle_timeout  — session timer overrides
+#   class / cookie   — Class attribute (≤32 chars)
+#   no_accounting    — 0/1
+#
+# mysql:
+#   auth_query: >
+#     SELECT 1 AS accepted, `cisco-avpair`
+#     FROM billing_clients WHERE ip = %(ip)s LIMIT 1
+#   acct_start_query: >
+#     INSERT INTO radacct
+#       (acctsessionid, username, nasipaddress, nasportid, acctstarttime, framedipaddress)
+#     VALUES (%(session_id)s, %(ip)s, %(nas_ip)s, %(port_number)s, NOW(), %(nat_ip)s)
+#     ON DUPLICATE KEY UPDATE acctstarttime = NOW()
+#   acct_update_query: >
+#     UPDATE radacct SET acctsessiontime = %(duration)s,
+#       acctinputoctets = %(in_bytes)s, acctoutputoctets = %(out_bytes)s
+#     WHERE acctsessionid = %(session_id)s
+#   acct_stop_query: >
+#     UPDATE radacct SET acctstoptime = NOW(), acctsessiontime = %(duration)s,
+#       acctinputoctets = %(in_bytes)s, acctoutputoctets = %(out_bytes)s
+#     WHERE acctsessionid = %(session_id)s
 
 # Reload tc.conf when its checksum changes, checked every N seconds
 tc_check_interval: 300

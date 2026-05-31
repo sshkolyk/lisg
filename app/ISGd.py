@@ -2,12 +2,10 @@
 """ISGd — ISG daemon."""
 from __future__ import annotations
 import argparse
-import hashlib
 import logging
 import logging.handlers
 import os
 import re
-import selectors
 import signal
 import socket
 import sys
@@ -20,6 +18,7 @@ from src import services as svc_mod
 from src import radius as rad
 from src import tc as tc_mod
 from src.config import Config, Service, load as load_config
+from src.backends.base import AuthResult, Backend, BackendUnavailable, DynamicService
 
 try:
     import pyrad.packet as rp_pkt
@@ -28,12 +27,42 @@ except ImportError:
     sys.exit('pyrad required: pip install pyrad')
 
 
+# ─── pool factory ────────────────────────────────────────────────────────────
+
+def _make_pool(cfg: Config, section: dict,
+               nas_ip: str, nas_id: str,
+               rad_dict: RadDict, log) -> list[Backend]:
+    """Build an ordered list of backends from an auth or accounting pool dict."""
+    pool: list[Backend] = []
+    for prio in sorted(section):
+        entry = section[prio]
+        if entry.type == 'radius':
+            from src.backends.radius import RadiusBackend
+            pool.append(RadiusBackend(entry, cfg, nas_ip, nas_id, rad_dict))
+        elif entry.type == 'mysql':
+            if not entry.host:
+                log.error('Pool entry %d type=mysql requires host/user/password/database', prio)
+                continue
+            from src.backends.mysql import MySQLBackend
+            pool.append(MySQLBackend(entry, cfg, nas_ip, nas_id))
+        else:
+            log.error("Unknown backend type '%s' at priority %d", entry.type, prio)
+    return pool
+
+
+# ─── daemon class ─────────────────────────────────────────────────────────────
+
 class Daemon:
     def __init__(self, cfg: Config):
         self.cfg      = cfg
         self.nas_ip   = cfg.nas_ip or isg.get_nas_ip() or '127.0.0.1'
         self.nas_id   = cfg.nas_identifier or self.nas_ip
         self.rad_dict = self._load_dict()
+        log = logging.getLogger('ISGd')
+        self._auth_pool  = _make_pool(cfg, cfg.auth,       self.nas_ip, self.nas_id,
+                                      self.rad_dict, log)
+        self._acct_pool  = _make_pool(cfg, cfg.accounting, self.nas_ip, self.nas_id,
+                                      self.rad_dict, log)
         self._stop    = threading.Event()
         self._log     = logging.getLogger('ISGd')
 
@@ -91,7 +120,6 @@ class Daemon:
     # ── startup ───────────────────────────────────────────────────────────────
 
     def _init_kernel(self):
-        """Register service descriptions and initial TC table with kernel."""
         for name in list(self.cfg.services):
             svc_mod.prepare(self.cfg, name)
 
@@ -125,6 +153,7 @@ class Daemon:
                 prev = result
 
     def job_coa(self):
+        """CoA/Disconnect handler — always RADIUS regardless of auth backend."""
         secret = self.cfg.coa_secret
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -220,6 +249,7 @@ class Daemon:
         nl.close()
 
     def _parse_coa_change(self, pkt, ev: dict, nl: socket.socket):
+        import hashlib
         rate_info = []
         for ai in (pkt.get('Cisco-Account-Info') or []):
             if str(ai).upper().startswith('Q'):
@@ -239,7 +269,7 @@ class Daemon:
             srv_list: dict = {}
             svc_sid = None
             try:
-                for cev in isg.get_list(nl, {'type': isg.EVENT_SERV_GETLIST}):
+                for cev in isg.get_list(nl, {'type': isg.EVENT_SERV_GETLIST})[0]:
                     sn = cev.get('service_name')
                     if sn:
                         srv_list[sn] = 'A' if (cev['flags'] & isg.SERVICE_STATUS_ON) else 'N'
@@ -272,210 +302,142 @@ class Daemon:
         return ev, None
 
     def job_isg(self):
-        sk  = isg.open_socket()
-        sk.setblocking(False)
-        sel = selectors.DefaultSelector()
-        sel.register(sk, selectors.EVENT_READ, data='netlink')
-
-        pending:   dict  = {}
-        id_box:    list  = [0]
-        last_watch: float = 0.0
-
+        sk = isg.open_socket()
+        sk.settimeout(1.0)
         isg.send_only(sk, {'type': isg.EVENT_LISTENER_REG})
-        self._log.info("ISG job ready, NAS='%s'", self.nas_ip)
+        auth_types  = '+'.join(b.__class__.__name__.replace('Backend','') for b in self._auth_pool)
+        acct_types  = '+'.join(b.__class__.__name__.replace('Backend','') for b in self._acct_pool)
+        self._log.info("ISG job ready, NAS='%s', auth=[%s], acct=[%s]",
+                       self.nas_ip, auth_types, acct_types)
 
         while not self._stop.is_set():
-            for key, _ in sel.select(timeout=1.0):
-                if key.data == 'netlink':
-                    try:
-                        data = sk.recv(1500)
-                    except BlockingIOError:
-                        continue
-                    except OSError as e:
-                        self._log.error('Netlink recv error: %s', e)
-                        continue
-                    self._handle_isg_event(isg.parse_event(data), sk,
-                                           sel, pending, id_box)
-                else:
-                    self._handle_radius_reply(key, sk, sel, pending, id_box)
+            try:
+                data = sk.recv(1500)
+                ev   = isg.parse_event(data)
+                self._handle_isg_event(ev)
+            except socket.timeout:
+                pass
+            except OSError as e:
+                self._log.error('Netlink recv error: %s', e)
 
-            now = time.monotonic()
-            if pending and now - last_watch >= 1.0:
-                self._sweep_timeouts(sk, sel, pending, id_box, now)
-                last_watch = now
-
-        sel.close()
         sk.close()
 
-    def _handle_isg_event(self, ev: dict, sk, sel, pending, id_box):
-        t = ev['type']
+    # ── event handling ────────────────────────────────────────────────────────
+
+    def _handle_isg_event(self, ev: dict):
+        t  = ev['type']
+        ip = isg.long2ip(ev.get('ipaddr', 0))
+
         if t == isg.EVENT_SESS_CREATE:
-            rad.send(
-                'Access-Request', ev, self.cfg, sel, pending, id_box,
-                self.rad_dict, self.nas_ip, self.nas_id)
+            threading.Thread(target=self._auth_thread,
+                             args=(ev,), daemon=True).start()
+
         elif t in (isg.EVENT_SESS_START, isg.EVENT_SESS_UPDATE, isg.EVENT_SESS_STOP):
-            ip = isg.long2ip(ev['ipaddr'])
-            if not (ev['flags'] & isg.NO_ACCT):
-                rad.send('Accounting-Request', ev, self.cfg, sel, pending,
-                         id_box, self.rad_dict, self.nas_ip, self.nas_id)
-            if ev['flags'] & isg.IS_SERVICE and t == isg.EVENT_SESS_START:
+            if not (ev.get('flags', 0) & isg.NO_ACCT):
+                threading.Thread(target=self._acct_thread,
+                                 args=(ev,), daemon=True).start()
+
+            if ev.get('flags', 0) & isg.IS_SERVICE and t == isg.EVENT_SESS_START:
                 self._log.info("Service '%s' for '%s' started",
                                ev.get('service_name'), ip)
             elif t == isg.EVENT_SESS_STOP:
-                nat = isg.long2ip(ev['nat_ipaddr'])
-                if ev['flags'] & isg.IS_APPROVED_SESSION:
-                    cb = getattr(self.cfg, 'cb_on_session_stop', None)
-                    if cb:
-                        threading.Thread(
-                            target=cb,
-                            args=({'ipaddr': ip, 'nat_ipaddr': nat},),
-                            daemon=True).start()
+                if ev.get('flags', 0) & isg.IS_APPROVED_SESSION:
                     self._log.info("Session '%s' on Virtual%d finished",
-                                   ip, ev['port_number'])
-                elif ev['flags'] & isg.IS_SERVICE:
+                                   ip, ev.get('port_number', 0))
+                elif ev.get('flags', 0) & isg.IS_SERVICE:
                     self._log.info("Service '%s' for '%s' finished",
                                    ev.get('service_name'), ip)
 
-    def _handle_radius_reply(self, key, sk, sel, pending, id_box):
-        sock_id = id(key.fileobj)
-        req = pending.get(sock_id)
-        if not req:
+    def _auth_thread(self, ev: dict):
+        ip = isg.long2ip(ev.get('ipaddr', 0))
+        result = None
+        for backend in self._auth_pool:
+            try:
+                result = backend.authenticate(ev)
+                break                          # got a definitive answer
+            except BackendUnavailable as e:
+                self._log.error("Auth backend unavailable for '%s': %s", ip, e)
+        if result is None:
+            self._log.error("All auth backends failed for '%s', session not approved", ip)
             return
-        err, reply_pkt = False, None
+        sk = isg.open_socket()
         try:
-            data = key.fileobj.recv(4096)
-            reply_pkt = rp_pkt.Packet(
-                secret=req['pk_secret'], dict=self.rad_dict, packet=data)
-            if reply_pkt.id != req['pk_rid']:
-                raise ValueError('identifier mismatch')
-        except Exception as e:
-            self._log.error("RADIUS reply error for '%s': %s",
-                            isg.long2ip(req['pk_ev'].get('ipaddr', 0)), e)
-            err = True
+            self._apply_auth_result(result, ev, sk)
+        except OSError as e:
+            self._log.error("Netlink error applying auth result for '%s': %s", ip, e)
+        finally:
+            sk.close()
 
-        if not err:
-            self._handle_radius_packet(reply_pkt, req['pk_ev'], sk, sel, pending, id_box)
+    def _acct_thread(self, ev: dict):
+        """Call every accounting backend (side by side — all receive the record)."""
+        for backend in self._acct_pool:
+            try:
+                backend.account(ev)
+            except BackendUnavailable as e:
+                self._log.error("Acct backend unavailable: %s", e)
+            except Exception as e:
+                self._log.error("Accounting error: %s", e)
 
-        pk_ev, conf_key, prio = req['pk_ev'], req['pk_ckey'], req['pk_prio']
-        rad.close_socket(sock_id, sel, pending)
-        if err:
-            rad.send(conf_key, pk_ev, self.cfg, sel, pending, id_box,
-                     self.rad_dict, self.nas_ip, self.nas_id, from_prio=prio + 1)
+    def _apply_auth_result(self, result: AuthResult, ev: dict, sk: socket.socket):
+        port = ev.get('port_number', 0)
+        ip   = isg.long2ip(ev.get('ipaddr', 0))
 
-    def _handle_radius_packet(self, pkt, exp_ev, sk, sel, pending, id_box):
-        code = rad.NAMES.get(pkt.code, '')
-        login = isg.long2ip(exp_ev.get('ipaddr', 0))
-        if code == 'Access-Accept' or \
-                (code == 'Access-Reject' and self.cfg.unauth_service_name_list):
-            self._process_accept(pkt, exp_ev, code, sk)
-        elif code == 'Access-Reject':
-            self._log.info("Session '%s' rejected", login)
+        # Register on-the-fly dynamic services with the kernel
+        for ds in result.dynamic_services:
+            if ds.name not in self.cfg.services:
+                self.cfg.services[ds.name] = Service(
+                    traffic_classes=[ds.traffic_class],
+                    rate_info=ds.rate_info,
+                )
+                svc_mod.prepare(self.cfg, ds.name)
             isg.send_only(sk, {
-                'type':         isg.EVENT_SESS_CHANGE,
-                'port_number':  exp_ev.get('port_number', 0),
-                'max_duration': self.cfg.unauth_session_max_duration,
+                'type':           isg.EVENT_SDESC_ADD,
+                'nehash_tc_name': ds.traffic_class,
+                'service_name':   ds.name,
+                'service_flags':  isg.SERVICE_DESC_IS_DYNAMIC,
             })
-        elif code == 'Accounting-Response':
-            pass
-        else:
-            self._log.error("Unexpected RADIUS code '%s' for '%s'", code, login)
+            result.services.setdefault(ds.name, 'A')
 
-    def _process_accept(self, pkt, exp_ev, code, sk):
-        login     = isg.long2ip(exp_ev.get('ipaddr', 0))
-        rate_info = []
-        srv_list:  dict = {}
-        oev = {'type': isg.EVENT_SESS_APPROVE,
-               'port_number': exp_ev.get('port_number', 0), 'flags': 0}
-
-        if code == 'Access-Accept':
-            for val in (pkt.get('Cisco-Account-Info') or []):
-                val = str(val)
-                m = re.match(r'^(A|N)(.+)', val)
-                if m:
-                    srv_list[m.group(2)] = m.group(1)
-                elif val.startswith('QC;'):
-                    m2 = re.match(r'^QC;([^;]+)', val)
-                    if m2:
-                        cls  = m2.group(1)
-                        dyn  = 'DYN_' + hashlib.md5(val.encode()).hexdigest()[:16].upper()
-                        self.cfg.services[dyn] = Service(
-                            traffic_classes=[cls], rate_info=val)
-                        if svc_mod.prepare(self.cfg, dyn):
-                            srv_list[dyn] = 'A'
-                            isg.send_only(sk, {
-                                'type':           isg.EVENT_SDESC_ADD,
-                                'nehash_tc_name': cls,
-                                'service_name':   dyn,
-                                'service_flags':  isg.SERVICE_DESC_IS_DYNAMIC,
-                            })
-                elif val.upper().startswith('Q'):
-                    rate_info = svc_mod.parse_qos(val)
-                else:
-                    self._log.error("Unknown Cisco-Account-Info '%s'", val)
-        else:
-            for entry in self.cfg.unauth_service_name_list:
-                m = re.match(r'^(A|N)(.+)', str(entry))
-                if m:
-                    srv_list[m.group(2)] = m.group(1)
-
-        srv_list = svc_mod.sanitize(self.cfg, srv_list)
-
-        nat_ip   = rad.attr_get(pkt, 'Framed-IP-Address')
-        alive    = rad.attr_get(pkt, 'Acct-Interim-Interval')
-        max_dur  = rad.attr_get(pkt, 'Session-Timeout')
-        idle     = rad.attr_get(pkt, 'Idle-Timeout')
-        cls_attr = rad.attr_get(pkt, 'Class')
-
-        oev['alive_interval'] = int(alive)   if alive   is not None \
-            else self.cfg.session_alive_interval
-        oev['idle_timeout']   = int(idle)    if idle    is not None \
-            else self.cfg.session_idle_timeout
-        oev['max_duration']   = int(max_dur) if (max_dur is not None and code != 'Access-Reject') \
-            else (self.cfg.unauth_session_max_duration
-                  if code == 'Access-Reject' else self.cfg.session_max_duration)
-        if cls_attr:
-            oev['cookie'] = str(cls_attr)[:32]
-        if len(rate_info) == 4:
-            oev.update(in_rate=rate_info[0], in_burst=rate_info[1],
-                       out_rate=rate_info[2], out_burst=rate_info[3])
-
+        # Apply static + dynamic services
+        srv_list = svc_mod.sanitize(self.cfg, result.services)
         for svc_name, svc_status in srv_list.items():
             sev = svc_mod.build_event(self.cfg, svc_name)
             sev['type']        = isg.EVENT_SERV_APPLY
-            sev['port_number'] = exp_ev.get('port_number', 0)
+            sev['port_number'] = port
             if svc_status == 'A':
                 sev['flags'] |= isg.SERVICE_STATUS_ON
             isg.send_only(sk, sev)
 
-        if nat_ip:
-            oev['nat_ipaddr'] = isg.ip2long(str(nat_ip))
-        nat_ip_str = str(nat_ip) if nat_ip else '0.0.0.0'
-
-        if self.cfg.no_accounting or code == 'Access-Reject':
+        # Build and send approve event
+        oev: dict = {
+            'type':         isg.EVENT_SESS_APPROVE,
+            'port_number':  port,
+            'flags':        0,
+            'alive_interval': (result.alive_interval
+                               if result.alive_interval is not None
+                               else self.cfg.session_alive_interval),
+            'idle_timeout':   (result.idle_timeout
+                               if result.idle_timeout is not None
+                               else self.cfg.session_idle_timeout),
+            'max_duration':   (result.max_duration
+                               if (result.accept and result.max_duration is not None)
+                               else (self.cfg.unauth_session_max_duration
+                                     if not result.accept
+                                     else self.cfg.session_max_duration)),
+        }
+        if result.cookie:
+            oev['cookie'] = result.cookie
+        if result.nat_ip:
+            oev['nat_ipaddr'] = isg.ip2long(result.nat_ip)
+        if len(result.rate_info) == 4:
+            oev.update(in_rate=result.rate_info[0], in_burst=result.rate_info[1],
+                       out_rate=result.rate_info[2], out_burst=result.rate_info[3])
+        if self.cfg.no_accounting or result.no_accounting or not result.accept:
             oev['flags'] |= isg.NO_ACCT
+
         isg.send_only(sk, oev)
-
-        cb = getattr(self.cfg, 'cb_on_session_start', None)
-        if cb:
-            threading.Thread(
-                target=cb,
-                args=({'ipaddr': login, 'nat_ipaddr': nat_ip_str},),
-                daemon=True).start()
-
-        self._log.info("Session '%s' on Virtual%d accepted",
-                       login, exp_ev.get('port_number', 0))
-
-    def _sweep_timeouts(self, sk, sel, pending, id_box, now):
-        for sock_id, req in list(pending.items()):
-            srv  = getattr(self.cfg, req['pk_ckey'], {}).get(req['pk_prio'], None)
-            tout = srv.timeout if srv else 5
-            if now - req['pk_time'] > tout:
-                self._log.error("RADIUS timeout for '%s'",
-                                isg.long2ip(req['pk_ev'].get('ipaddr', 0)))
-                pk_ev, conf_key, prio = req['pk_ev'], req['pk_ckey'], req['pk_prio']
-                rad.close_socket(sock_id, sel, pending)
-                rad.send(conf_key, pk_ev, self.cfg, sel, pending, id_box,
-                         self.rad_dict, self.nas_ip, self.nas_id, from_prio=prio + 1)
+        self._log.info("Session '%s' on Virtual%d %s",
+                       ip, port, 'accepted' if result.accept else 'rejected')
 
     # ── run ───────────────────────────────────────────────────────────────────
 
@@ -484,9 +446,7 @@ class Daemon:
         self._check_pid()
         self._init_kernel()
 
-        if not self.cfg.daemonize:
-            pass  # keep stdout/stderr
-        else:
+        if self.cfg.daemonize:
             self._daemonize()
 
         def _shutdown(sig, _):
@@ -515,6 +475,9 @@ class Daemon:
                 self._stop.wait(1.0)
         except KeyboardInterrupt:
             self._stop.set()
+        finally:
+            for b in self._auth_pool + self._acct_pool:
+                b.close()
         for t in threads:
             t.join(timeout=5.0)
 
