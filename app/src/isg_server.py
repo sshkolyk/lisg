@@ -47,11 +47,23 @@ class ISGServer:
         while not self._stop.is_set():
             try:
                 data = sk.recv(1500)
-                self._dispatch(isg.parse_event(data))
             except socket.timeout:
-                pass
+                continue
             except OSError as e:
+                # A persistent error here (e.g. ENOBUFS when the kernel floods
+                # session events and overruns SO_RCVBUF) must not turn into a
+                # busy-loop that pins a core. Back off briefly before retrying.
                 log.error('Netlink recv error: %s', e)
+                self._stop.wait(0.1)
+                continue
+
+            try:
+                self._dispatch(isg.parse_event(data))
+            except ValueError as e:
+                # Malformed/short netlink frame — skip it, keep the loop alive.
+                log.warning('Skipping malformed netlink event: %s', e)
+            except Exception:
+                log.exception('Error dispatching netlink event')
 
         sk.close()
 
