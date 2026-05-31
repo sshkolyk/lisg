@@ -75,6 +75,29 @@ def _find(sk, target_ev: dict, arg: str):
     return None
 
 
+def _services_for(sk, target_ev: dict, parent_ipaddr: int) -> list:
+    """Service sub-sessions belonging to the monitored session."""
+    try:
+        rows, _ = isg.get_list(sk, {**target_ev, 'type': isg.EVENT_SERV_GETLIST},
+                               timeout=2)
+    except OSError:
+        return []
+    return [r for r in rows
+            if r['type'] == isg.EVENT_SESS_INFO
+            and r.get('service_name')
+            and r.get('ipaddr') == parent_ipaddr]
+
+
+def _svc_flags(ev: dict) -> str:
+    f = ev.get('flags', 0)
+    s = ''
+    s += 'O' if f & isg.SERVICE_STATUS_ON else ''
+    s += 'U' if f & isg.SERVICE_ONLINE   else ''
+    s += 'T' if f & isg.SERVICE_TAGGER   else ''
+    s += 'Z' if f & isg.NO_ACCT          else ''
+    return s or '-'
+
+
 # ── graph rendering ───────────────────────────────────────────────────────────
 
 _LABEL_W = 6   # width of the Y-axis label column
@@ -137,6 +160,9 @@ def run(sk, target_ev: dict, arg: str, interval: float = 1.0,
     out_hist: deque = deque(maxlen=400)
     prev = None                                          # (t, in_bytes, out_bytes)
     last_seen = None
+    services: list = []
+    status_msg = ''
+    confirm_clear = False
 
     def cleanup():
         sys.stdout.write('\033[?25h\033[0m\n')          # show cursor, reset
@@ -151,6 +177,7 @@ def run(sk, target_ev: dict, arg: str, interval: float = 1.0,
             sess = _find(sk, target_ev, arg)
             if sess:
                 last_seen = sess
+                services = _services_for(sk, target_ev, sess['ipaddr'])
                 if prev:
                     dt = max(t - prev[0], 1e-6)
                     din  = max(sess['in_bytes']  - prev[1], 0)
@@ -158,19 +185,45 @@ def run(sk, target_ev: dict, arg: str, interval: float = 1.0,
                     in_hist.append(din  * 8 / dt)
                     out_hist.append(dout * 8 / dt)
                 prev = (t, sess['in_bytes'], sess['out_bytes'])
+            else:
+                services = []
 
-            _render(last_seen, arg, in_hist, out_hist, no_color)
+            _render(last_seen, arg, in_hist, out_hist, no_color,
+                    services, status_msg, confirm_clear)
 
-            # wait `interval`, but poll stdin for 'q' to quit
+            # wait `interval`, polling stdin for hotkeys
             deadline = t + interval
-            while True:
+            redraw = False
+            while not redraw:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                if is_tty and select.select([sys.stdin], [], [], remaining)[0]:
-                    ch = sys.stdin.read(1)
-                    if ch in ('q', 'Q', '\x03'):
-                        return 0
+                if not (is_tty and select.select([sys.stdin], [], [], remaining)[0]):
+                    continue
+                ch = sys.stdin.read(1)
+                if confirm_clear:                       # awaiting y/N for clear
+                    if ch in ('y', 'Y'):
+                        try:
+                            isg.send_event(sk, {**target_ev,
+                                                'type': isg.EVENT_SESS_CLEAR})
+                            status_msg = 'session cleared'
+                            in_hist.clear(); out_hist.clear(); prev = None
+                        except OSError as e:
+                            status_msg = f'clear failed: {e}'
+                    else:
+                        status_msg = 'clear cancelled'
+                    confirm_clear = False
+                    redraw = True
+                elif ch in ('q', 'Q', '\x03'):
+                    return 0
+                elif ch in ('c', 'C'):
+                    confirm_clear = True
+                    status_msg = ''
+                    redraw = True
+                elif ch in ('r', 'R'):
+                    in_hist.clear(); out_hist.clear(); prev = None
+                    status_msg = 'graph reset'
+                    redraw = True
     except (KeyboardInterrupt, OSError):
         return 0
     finally:
@@ -178,7 +231,8 @@ def run(sk, target_ev: dict, arg: str, interval: float = 1.0,
 
 
 def _render(sess, arg: str, in_hist: deque, out_hist: deque,
-            no_color: bool) -> None:
+            no_color: bool, services: list = (), status_msg: str = '',
+            confirm_clear: bool = False) -> None:
     cols, lines = shutil.get_terminal_size((80, 24))
     # graph lines are indented one space; keep total <= cols-1 to avoid the
     # terminal auto-wrap-at-last-column quirk (which inserts blank lines).
@@ -231,6 +285,16 @@ def _render(sess, arg: str, in_hist: deque, out_hist: deque,
         out.append(_c('36', f" OUT  cur {_fmt_bps(out_cur)}  avg {_fmt_bps(out_avg)}"
                            f"  max {_fmt_bps(out_max)}  [{cap_out}]", no_color) + '\033[K')
 
+        # Per-service shaper rates (sub-sessions of this session)
+        if services:
+            out.append(_c('1', " Services (shaper in / out):", no_color) + '\033[K')
+            for s in services:
+                nm = (s.get('service_name') or '?')[:20]
+                line = (f"   {nm:<20} in {_fmt_bps(s.get('in_rate', 0))}"
+                        f"  out {_fmt_bps(s.get('out_rate', 0))}"
+                        f"  [{_svc_flags(s)}]")
+                out.append(_c('33', line, no_color) + '\033[K')
+
     out.append(_c('90', sep, no_color) + '\033[K')
 
     # split remaining vertical space between the two graphs
@@ -246,7 +310,13 @@ def _render(sess, arg: str, in_hist: deque, out_hist: deque,
     for row in _graph_block(out_hist, out_ceil, gw, gh, '36', no_color):
         out.append(row + '\033[K')
 
-    out.append(_c('90', " [q] quit", no_color) + '\033[K')
+    if confirm_clear:
+        out.append(_c('31', f" Clear session '{arg}' ?   [y/N]", no_color) + '\033[K')
+    else:
+        foot = " [q] quit   [c] clear   [r] reset graph"
+        if status_msg:
+            foot += f"      — {status_msg}"
+        out.append(_c('90', foot, no_color) + '\033[K')
     out.append('\033[J')                                # clear to end of screen
 
     sys.stdout.write('\n'.join(out))
