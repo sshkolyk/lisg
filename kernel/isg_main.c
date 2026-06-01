@@ -1045,7 +1045,7 @@ isg_mt(const struct sk_buff *skb,
 		struct nehash_entry *ne;
 		struct traffic_class **tc_list;
 
-		read_lock_bh(&is->isg_net->nehash_rw_lock);
+		rcu_read_lock();
 		ne = nehash_lookup(is->isg_net, iph->daddr);
 		if (ne == NULL)
 			goto out;
@@ -1072,7 +1072,7 @@ isg_mt(const struct sk_buff *skb,
 			break;
 		}
 out:
-		read_unlock_bh(&is->isg_net->nehash_rw_lock);
+		rcu_read_unlock();
 	}
 
 	return err;
@@ -1170,10 +1170,10 @@ isg_tg(struct sk_buff *skb,
 	if (unlikely(!hlist_empty(&is->srv_head))) {
 		/* This session is having sub-sessions, try to classify */
 		iisg_net = is->isg_net;
-		read_lock_bh(&iisg_net->nehash_rw_lock);
+		rcu_read_lock();
 		ne = nehash_lookup(iisg_net, raddr);
 		if (ne == NULL) {
-			read_unlock_bh(&iisg_net->nehash_rw_lock);
+			rcu_read_unlock();
 			/* assume action = action_drop; */
 			goto out;
 		}
@@ -1201,7 +1201,7 @@ isg_tg(struct sk_buff *skb,
 			}
 		}
 
-		read_unlock_bh(&iisg_net->nehash_rw_lock);
+		rcu_read_unlock();
 		if (!parent_is) {
 			/* This packet doesn't belongs to session's services (or appropriate service's status is not on) */
 			/* assume action = action_drop; */

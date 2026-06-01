@@ -349,20 +349,27 @@ def _render(sess, arg: str, in_hist: deque, out_hist: deque,
         mm, ss = divmod(m, 60)
         dur_s = f'{d}d{hh:02d}:{mm:02d}:{ss:02d}'
 
-        out.append(f" IP: {ip:<15}  NAT: {nat:<15}  "
-                   f"MAC: {_mac_of(sess)}" + '\033[K')
-        out.append(f" Session: {sess.get('session_id','-')}   "
-                   f"Service: {sess.get('service_name') or 'Main'}" + '\033[K')
-        out.append(f" Duration: {dur_s}   "
-                   f"In: {_fmt_bytes(sess['in_bytes'])}   "
-                   f"Out: {_fmt_bytes(sess['out_bytes'])}" + '\033[K')
+        p1 = f" IP: {ip:<15}  NAT: {nat:<15}  MAC: {_mac_of(sess)}"
+        p2 = (f"Session: {sess.get('session_id','-')}  Service: {sess.get('service_name') or 'Main'}"
+              f"  Dur: {dur_s}  In: {_fmt_bytes(sess['in_bytes'])}  Out: {_fmt_bytes(sess['out_bytes'])}")
+        if len(p1) + 2 + len(p2) <= cols - 1:
+            out.append(p1 + '  ' + p2 + '\033[K')
+        else:
+            out.append(p1 + '\033[K')
+            out.append(' ' + p2 + '\033[K')
 
         cap_in  = f"cap {_fmt_bps(in_cap)}"  if in_cap  else "uncapped"
         cap_out = f"cap {_fmt_bps(out_cap)}" if out_cap else "uncapped"
-        out.append(_c('32', f" IN   cur {_fmt_bps(in_cur)}  avg {_fmt_bps(in_avg)}"
-                           f"  max {_fmt_bps(in_max)}  [{cap_in}]", no_color) + '\033[K')
-        out.append(_c('36', f" OUT  cur {_fmt_bps(out_cur)}  avg {_fmt_bps(out_avg)}"
-                           f"  max {_fmt_bps(out_max)}  [{cap_out}]", no_color) + '\033[K')
+        in_s  = (f" IN   cur {_fmt_bps(in_cur)}  avg {_fmt_bps(in_avg)}"
+                 f"  max {_fmt_bps(in_max)}  [{cap_in}]")
+        out_s = (f" OUT  cur {_fmt_bps(out_cur)}  avg {_fmt_bps(out_avg)}"
+                 f"  max {_fmt_bps(out_max)}  [{cap_out}]")
+        if len(in_s) + 3 + len(out_s) - 1 <= cols - 1:
+            out.append(_c('32', in_s, no_color) + '   '
+                       + _c('36', out_s.lstrip(), no_color) + '\033[K')
+        else:
+            out.append(_c('32', in_s, no_color) + '\033[K')
+            out.append(_c('36', out_s, no_color) + '\033[K')
 
         # Per-service shaper rates (sub-sessions of this session)
         if services:

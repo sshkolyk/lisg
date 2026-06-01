@@ -12,6 +12,7 @@
 #include <net/net_namespace.h>
 #include <net/netns/generic.h>
 #include <linux/list_bl.h>
+#include <linux/rculist.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0)
 #include <linux/bitmap.h>
 #endif
@@ -268,6 +269,7 @@ struct nehash_entry {
 	u32 pfx;
 	u32 mask;
 	struct traffic_class *tc;
+	struct rcu_head rcu;
 };
 
 struct isg_service_desc {

@@ -1,11 +1,19 @@
 # Linux ISG with python userspace
-It's fork from https://github.com/vvfedorenko/lisg
+It's fork from <a href="https://github.com/vvfedorenko/lisg">vvfedorenko/lisg</a>.
+
 Kernel code - original.
 Userspace rewritten from perl to python.
 Key changes:
 1. Added support for newer radius (Message-Authenticator attribute).
 2. Support for backend mysql in mix with radius.
-3. Optional uvicorn API.
+3. Optional uvicorn API .
+      #### Endpoints:
+        GET  /status                  session counts, uptime, backend list
+        GET  /sessions?limit=&offset= paginated session list
+        GET  /sessions/{id}           id = ip | mac | session_id
+        PUT  /sessions/{id}           body: {in_kbps, out_kbps, approve, block}
+                                  (approve on a non-existent IP pre-approves it)
+4. ISG.py monitor action with live graph and hotkeys.
 ----------
 
 # Changes
