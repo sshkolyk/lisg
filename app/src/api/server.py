@@ -60,9 +60,11 @@ def _is_ip(s: str) -> bool:
 
 def create_app(ctx: APIContext):
     from fastapi import Depends, FastAPI, HTTPException
+    from fastapi.responses import StreamingResponse
     from .auth import make_auth
     from .models import SessionInfo, SessionUpdate, StatusInfo, UpdateResult
     from . import sessions as sess
+    from .traffic import traffic_stream
 
     api_cfg = ctx.cfg.api
     auth    = make_auth(api_cfg)
@@ -113,6 +115,22 @@ def create_app(ctx: APIContext):
             raise HTTPException(status_code=404, detail='Session not found')
 
         return UpdateResult(**sess.apply_update(s, id, upd))
+
+    _SSE_HEADERS = {
+        'Cache-Control':    'no-cache',
+        'X-Accel-Buffering': 'no',   # disable nginx response buffering
+    }
+
+    @app.get('/traffic/stream/{id}', dependencies=[Depends(auth)])
+    async def stream_session_traffic(id: str, interval: float = 1.0):
+        """SSE stream of in/out throughput for a single session (IP / session-id / MAC)."""
+        if not 0.5 <= interval <= 30:
+            raise HTTPException(status_code=422, detail='interval must be 0.5–30')
+        return StreamingResponse(
+            traffic_stream(id, interval),
+            media_type='text/event-stream',
+            headers=_SSE_HEADERS,
+        )
 
     return app
 

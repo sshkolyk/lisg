@@ -35,8 +35,11 @@ def make_auth(cfg: APIConfig):
                                     detail='Client IP not in access list')
 
         # ── Bearer token ──────────────────────────────────────────────────────
+        # Query-param fallback allows browser EventSource (which can't set headers)
         if cfg.token:
-            if not credentials or credentials.credentials != cfg.token:
+            bearer = credentials.credentials if credentials else None
+            query_token = request.query_params.get('token')
+            if bearer != cfg.token and query_token != cfg.token:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail='Invalid or missing token',

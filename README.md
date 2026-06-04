@@ -8,11 +8,21 @@ Key changes:
 2. Support for backend mysql in mix with radius.
 3. Optional uvicorn API .
       #### Endpoints:
-        GET  /status                  session counts, uptime, backend list
-        GET  /sessions?limit=&offset= paginated session list
-        GET  /sessions/{id}           id = ip | mac | session_id
-        PUT  /sessions/{id}           body: {in_kbps, out_kbps, approve, block}
-                                  (approve on a non-existent IP pre-approves it)
+        GET  /status                            session counts, uptime, backend list
+        GET  /sessions?limit=&offset=           paginated session list
+        GET  /sessions/{id}                     id = ip | mac | session_id
+        PUT  /sessions/{id}                     body: {in_kbps, out_kbps, approve, block}
+                                            (approve on a non-existent IP pre-approves it)
+        GET  /traffic/stream/{id}?interval=1.0  SSE stream of in/out throughput (bps) for a
+                                            single session; id = ip | mac | session_id;
+                                            interval range 0.5–30 s (default 1 s).
+                                            Auth token may be passed as ?token= query param
+                                            (required for browser EventSource).
+                                            Event shape:
+                                            {"ts": <unix float>, "sessions": [
+                                              {"ip","session_id","in_bps","out_bps",
+                                               "in_bytes","out_bytes"}
+                                            ]}
 4. ISG.py monitor action with live graph and hotkeys.
 ----------
 
