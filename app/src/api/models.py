@@ -63,7 +63,7 @@ class UpdateResult(BaseModel):
 
 class ArpingResult(BaseModel):
     ip:               str
-    iface:            str
+    iface:            Optional[str]
     reachable:        bool
     packets_sent:     int
     packets_received: int

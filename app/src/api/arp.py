@@ -21,7 +21,12 @@ _SIOCGIFHWADDR = 0x8927
 # ── routing / interface helpers ───────────────────────────────────────────────
 
 def _route_iface(dst_ip: str) -> str:
-    """Return the outgoing interface for dst_ip via /proc/net/route LPM."""
+    """Return the outgoing interface for dst_ip, only for directly-connected subnets.
+
+    Skips routes with a non-zero gateway — those go through a router and ARP
+    cannot reach the target across an L3 boundary.  Raises OSError if the only
+    matching route is via a gateway (or no route exists at all).
+    """
     target = struct.unpack('<I', socket.inet_aton(dst_ip))[0]
     best_prefix = -1
     best_iface  = ''
@@ -31,6 +36,9 @@ def _route_iface(dst_ip: str) -> str:
             parts = line.split()
             if len(parts) < 8:
                 continue
+            gateway = int(parts[2], 16)
+            if gateway != 0:            # routed — not L2-reachable
+                continue
             dest = int(parts[1], 16)
             mask = int(parts[7], 16)
             if (target & mask) == dest:
@@ -39,7 +47,7 @@ def _route_iface(dst_ip: str) -> str:
                     best_prefix = prefix_len
                     best_iface  = parts[0]
     if not best_iface:
-        raise OSError(f'No route to {dst_ip}')
+        raise OSError(f'{dst_ip} is not on a directly connected subnet')
     return best_iface
 
 

@@ -159,7 +159,7 @@ def _session_ev(session: dict) -> dict:
     }
 
 
-def apply_update(session: dict, id_str: str, upd) -> dict:
+def apply_update(session: dict, upd) -> dict:
     """Apply SessionUpdate fields to the kernel. Returns a dict describing what was done."""
     actions: list[str] = []
     sk = isg.open_socket()

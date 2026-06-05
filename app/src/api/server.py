@@ -80,8 +80,10 @@ def create_app(ctx: APIContext):
             ip = s['ip']
         try:
             return await asyncio.to_thread(arping_sync, ip)
-        except OSError as e:
-            raise HTTPException(status_code=503, detail=str(e))
+        except OSError:
+            return ArpingResult(ip=ip, iface=None, reachable=False,
+                                packets_sent=0, packets_received=0,
+                                rtt_ms=[], avg_rtt_ms=None)
 
     @app.get('/sessions/{id}', response_model=SessionInfo, dependencies=[Depends(auth)])
     async def get_session(id: str):
@@ -100,7 +102,7 @@ def create_app(ctx: APIContext):
         if s is None:
             raise HTTPException(status_code=404, detail='Session not found')
 
-        return UpdateResult(**sess.apply_update(s, id, upd))
+        return UpdateResult(**sess.apply_update(s, upd))
 
     _SSE_HEADERS = {
         'Cache-Control':    'no-cache',
