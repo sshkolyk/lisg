@@ -48,8 +48,7 @@ class StatusInfo(BaseModel):
 
 
 class UpdateResult(BaseModel):
-    actions:      list[str]
-    pre_approved: bool = False
+    actions: list[str]
 
 
 class ArpingResult(BaseModel):

@@ -12,7 +12,6 @@ Key changes:
            GET  /sessions?limit=&offset=           paginated session list
            GET  /sessions/{id}                     id = ip | mac | session_id
            PUT  /sessions/{id}                     body: {in_kbps, out_kbps, approve, block}
-                                               (approve on a non-existent IP pre-approves it)
            GET  /sessions/{id}/arping              ARP-probe the session id, ip (if ip even without session)
                                                {
                                                    "ip": "192.168.1.10",

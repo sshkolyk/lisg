@@ -139,32 +139,29 @@ def find_session(id_str: str) -> Optional[dict]:
 
 
 def _session_ev(session: dict) -> dict:
-    """Build a minimal kernel event targeting a known session by port."""
-    return {'port_number': session['port']}
+    """Build a minimal kernel event targeting a known session by port and IP."""
+    return {
+        'port_number': session['port'],
+        'ipaddr':      isg.ip2long(session['ip']),
+    }
 
 
-def apply_update(session: Optional[dict], id_str: str, upd) -> dict:
-    """
-    Apply SessionUpdate fields to the kernel.
-    Returns a dict describing what was done.
-    Returns None for pre_approved flag separately.
-    """
+def apply_update(session: dict, id_str: str, upd) -> dict:
+    """Apply SessionUpdate fields to the kernel. Returns a dict describing what was done."""
     actions: list[str] = []
     sk = isg.open_socket()
     try:
         # ── block takes precedence ─────────────────────────────────────────
         if upd.block:
-            if session:
-                ev = _session_ev(session)
-                ev['type'] = isg.EVENT_SESS_CLEAR
-                isg.send_event(sk, ev)
-                actions.append('block')
-            # no session → nothing to block
-            return {'actions': actions, 'pre_approved': False}
+            ev = _session_ev(session)
+            ev['type'] = isg.EVENT_SESS_CLEAR
+            isg.send_event(sk, ev)
+            actions.append('block')
+            return {'actions': actions}
 
         # ── approve (with optional rate) ───────────────────────────────────
         if upd.approve:
-            ev = _session_ev(session) if session else {}
+            ev = _session_ev(session)
             ev['type']  = isg.EVENT_SESS_APPROVE
             ev['flags'] = 0
             _apply_rates(ev, upd)
@@ -173,7 +170,7 @@ def apply_update(session: Optional[dict], id_str: str, upd) -> dict:
 
         # ── rate-only change ───────────────────────────────────────────────
         elif upd.in_kbps is not None or upd.out_kbps is not None:
-            ev = _session_ev(session) if session else {}
+            ev = _session_ev(session)
             ev['type'] = isg.EVENT_SESS_CHANGE
             _apply_rates(ev, upd)
             isg.send_event(sk, ev)
@@ -182,7 +179,7 @@ def apply_update(session: Optional[dict], id_str: str, upd) -> dict:
     finally:
         sk.close()
 
-    return {'actions': actions, 'pre_approved': False}
+    return {'actions': actions}
 
 
 def _apply_rates(ev: dict, upd) -> None:

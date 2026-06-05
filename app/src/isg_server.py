@@ -23,13 +23,12 @@ class ISGServer:
 
     def __init__(self, cfg: Config, nas_ip: str,
                  auth_pool: list[Backend], acct_pool: list[Backend],
-                 stop: threading.Event, pre_approved=None):
-        self._cfg          = cfg
-        self._nas_ip       = nas_ip
-        self._auth_pool    = auth_pool
-        self._acct_pool    = acct_pool
-        self._stop         = stop
-        self._pre_approved = pre_approved   # Optional[PreApprovalStore]
+                 stop: threading.Event):
+        self._cfg       = cfg
+        self._nas_ip    = nas_ip
+        self._auth_pool = auth_pool
+        self._acct_pool = acct_pool
+        self._stop      = stop
 
     # ── public entry point ────────────────────────────────────────────────────
 
@@ -98,19 +97,6 @@ class ISGServer:
 
     def _auth_thread(self, ev: dict) -> None:
         ip = isg.long2ip(ev.get('ipaddr', 0))
-
-        # API pre-approval: skip backends, auto-accept
-        if self._pre_approved and self._pre_approved.consume(ip):
-            log.info("Session '%s' auto-approved (API pre-approval)", ip)
-            result = AuthResult(accept=True)
-            sk = isg.open_socket()
-            try:
-                self._apply_auth_result(result, ev, sk)
-            except OSError as e:
-                log.error("Netlink error applying pre-approval for '%s': %s", ip, e)
-            finally:
-                sk.close()
-            return
 
         result = None
         for backend in self._auth_pool:

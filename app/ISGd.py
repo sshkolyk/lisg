@@ -15,7 +15,7 @@ from src import services as svc_mod
 from src import tc as tc_mod
 from src.coa_server import CoAServer
 from src.isg_server import ISGServer
-from src.api import APIServer, PreApprovalStore
+from src.api import APIServer
 from src.api.server import APIContext
 from src.config import Config, load as load_config
 from src.backends.base import Backend
@@ -65,14 +65,12 @@ class Daemon:
         self._stop    = threading.Event()
         self._coa          = CoAServer(cfg, self.nas_ip, self.nas_id,
                                        self.rad_dict, self._stop)
-        self._pre_approved = PreApprovalStore()
-        self._isg          = ISGServer(cfg, self.nas_ip,
-                                       self._auth_pool, self._acct_pool,
-                                       self._stop, self._pre_approved)
-        self._api          = APIServer(
+        self._isg = ISGServer(cfg, self.nas_ip,
+                              self._auth_pool, self._acct_pool,
+                              self._stop)
+        self._api = APIServer(
             APIContext(cfg=cfg, nas_ip=self.nas_ip,
-                       auth_pool=self._auth_pool, acct_pool=self._acct_pool,
-                       pre_approved=self._pre_approved),
+                       auth_pool=self._auth_pool, acct_pool=self._acct_pool),
             self._stop,
         ) if cfg.api else None
         self._log     = logging.getLogger('ISGd')

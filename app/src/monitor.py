@@ -204,7 +204,7 @@ def run(sk, target_ev: dict, arg: str, interval: float = 1.0,
 
     def do_approve() -> str:
         try:
-            isg.send_event(sk, {**target_ev, 'type': isg.EVENT_SESS_APPROVE})
+            isg.send_only(sk, {**target_ev, 'type': isg.EVENT_SESS_APPROVE})
             return 'session approved'
         except OSError as e:
             return f'approve failed: {e}'
@@ -290,11 +290,11 @@ def run(sk, target_ev: dict, arg: str, interval: float = 1.0,
                     pending = (f"Clear session '{arg}' ?", do_clear)
                     status_msg = ''; redraw = True
                 elif ch in ('a', 'A'):
-                    approved = bool(last_seen and
-                                    last_seen.get('flags', 0) & isg.IS_APPROVED_SESSION)
-                    if approved:                        # block = disconnect (confirm)
+                    if sess is None:
+                        status_msg = 'no active session'
+                    elif sess.get('flags', 0) & isg.IS_APPROVED_SESSION:
                         pending = (f"Block (disconnect) '{arg}' ?", do_clear)
-                    else:                               # approve immediately
+                    else:
                         status_msg = do_approve()
                     redraw = True
                 elif ch in ('s', 'S'):

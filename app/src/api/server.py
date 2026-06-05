@@ -1,4 +1,4 @@
-"""API server, pre-approval store, and shared context.
+"""API server and shared context.
 
 FastAPI/uvicorn are imported lazily (inside create_app / run) so that ISGd can
 start without those packages installed when the API is disabled.
@@ -19,38 +19,15 @@ from dataclasses import dataclass, field
 log = logging.getLogger(__name__)
 
 
-# ── pre-approval store ────────────────────────────────────────────────────────
-
-class PreApprovalStore:
-    """Thread-safe set of IPs that should be auto-approved on next connect."""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._ips:  set[str] = set()
-
-    def add(self, ip: str) -> None:
-        with self._lock:
-            self._ips.add(ip)
-
-    def consume(self, ip: str) -> bool:
-        """Return True and remove ip if it was pre-approved."""
-        with self._lock:
-            if ip in self._ips:
-                self._ips.discard(ip)
-                return True
-            return False
-
-
 # ── API context (shared state) ────────────────────────────────────────────────
 
 @dataclass
 class APIContext:
-    cfg:          object       # Config (avoid import cycle / typing at runtime)
-    nas_ip:       str
-    auth_pool:    list
-    acct_pool:    list
-    pre_approved: PreApprovalStore
-    started_at:   float = field(default_factory=time.monotonic)
+    cfg:        object  # Config (avoid import cycle / typing at runtime)
+    nas_ip:     str
+    auth_pool:  list
+    acct_pool:  list
+    started_at: float = field(default_factory=time.monotonic)
 
 
 def _is_ip(s: str) -> bool:
@@ -120,13 +97,6 @@ def create_app(ctx: APIContext):
             raise HTTPException(status_code=422, detail='At least one field required')
 
         s = sess.find_session(id)
-
-        # approve for a not-yet-existing IP session → pre-approve next connect
-        if s is None and upd.approve and _is_ip(id) and not upd.block:
-            ctx.pre_approved.add(id)
-            log.info("API: pre-approved IP '%s' for next connect", id)
-            return UpdateResult(actions=['approve'], pre_approved=True)
-
         if s is None:
             raise HTTPException(status_code=404, detail='Session not found')
 
