@@ -13,6 +13,16 @@ class SessionUpdate(BaseModel):
     block:    Optional[bool] = Field(None, description='Block / disconnect session')
 
 
+class SessionFlags(BaseModel):
+    approved:        bool
+    service:         bool
+    service_on:      bool
+    service_online:  bool
+    no_accounting:   bool
+    dying:           bool
+    tagger:          bool
+
+
 class SessionInfo(BaseModel):
     session_id:        str
     ip:                str
@@ -31,7 +41,7 @@ class SessionInfo(BaseModel):
     alive_interval:    int
     idle_timeout:      int
     max_duration:      int
-    flags:             int
+    flags:             SessionFlags
     service_name:      Optional[str]
     parent_session_id: Optional[str]
 

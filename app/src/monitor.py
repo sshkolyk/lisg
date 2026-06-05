@@ -88,6 +88,18 @@ def _services_for(sk, target_ev: dict, parent_ipaddr: int) -> list:
             and r.get('ipaddr') == parent_ipaddr]
 
 
+def _sess_flags(ev: dict, no_color: bool) -> str:
+    f = ev.get('flags', 0)
+    if f & isg.IS_APPROVED_SESSION:
+        status = _c('32', 'A', no_color)
+    else:
+        status = _c('31', 'X', no_color)
+    s = status
+    s += 'Z' if f & isg.NO_ACCT    else ''
+    s += 'D' if f & isg.IS_DYING   else ''
+    return s
+
+
 def _svc_flags(ev: dict) -> str:
     f = ev.get('flags', 0)
     s = ''
@@ -351,7 +363,8 @@ def _render(sess, arg: str, in_hist: deque, out_hist: deque,
 
         p1 = f" IP: {ip:<15}  NAT: {nat:<15}  MAC: {_mac_of(sess)}"
         p2 = (f"Session: {sess.get('session_id','-')}  Service: {sess.get('service_name') or 'Main'}"
-              f"  Dur: {dur_s}  In: {_fmt_bytes(sess['in_bytes'])}  Out: {_fmt_bytes(sess['out_bytes'])}")
+              f"  Dur: {dur_s}  In: {_fmt_bytes(sess['in_bytes'])}  Out: {_fmt_bytes(sess['out_bytes'])}"
+              f"  [{_sess_flags(sess, no_color)}]")
         if len(p1) + 2 + len(p2) <= cols - 1:
             out.append(p1 + '  ' + p2 + '\033[K')
         else:

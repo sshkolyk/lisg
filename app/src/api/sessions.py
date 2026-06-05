@@ -5,6 +5,7 @@ import re
 from typing import Optional
 
 from .. import isg
+from .models import SessionFlags
 
 
 # ── ARP table ─────────────────────────────────────────────────────────────────
@@ -41,6 +42,18 @@ def _norm_mac(s: Optional[str]) -> str:
     return re.sub(r'[:\-.]', '', s).lower()
 
 
+def _decode_flags(f: int) -> SessionFlags:
+    return SessionFlags(
+        approved       = bool(f & isg.IS_APPROVED_SESSION),
+        service        = bool(f & isg.IS_SERVICE),
+        service_on     = bool(f & isg.SERVICE_STATUS_ON),
+        service_online = bool(f & isg.SERVICE_ONLINE),
+        no_accounting  = bool(f & isg.NO_ACCT),
+        dying          = bool(f & isg.IS_DYING),
+        tagger         = bool(f & isg.SERVICE_TAGGER),
+    )
+
+
 def _ev_to_info(ev: dict, arp: dict) -> dict:
     ip     = isg.long2ip(ev['ipaddr'])
     nat    = isg.long2ip(ev['nat_ipaddr']) if ev.get('nat_ipaddr') else None
@@ -63,7 +76,7 @@ def _ev_to_info(ev: dict, arp: dict) -> dict:
         'alive_interval':    ev.get('alive_interval', 0),
         'idle_timeout':      ev.get('idle_timeout', 0),
         'max_duration':      ev.get('max_duration', 0),
-        'flags':             ev.get('flags', 0),
+        'flags':             _decode_flags(ev.get('flags', 0)),
         'service_name':      ev.get('service_name'),
         'parent_session_id': ev.get('parent_session_id'),
     }
