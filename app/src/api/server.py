@@ -9,6 +9,7 @@ objects at function-definition time, because the models are imported locally
 inside ``create_app`` and would otherwise be invisible to FastAPI's
 ``get_type_hints`` (which only sees module globals).
 """
+import asyncio
 import logging
 import re
 import threading
@@ -62,9 +63,10 @@ def create_app(ctx: APIContext):
     from fastapi import Depends, FastAPI, HTTPException
     from fastapi.responses import StreamingResponse
     from .auth import make_auth
-    from .models import SessionInfo, SessionUpdate, StatusInfo, UpdateResult
+    from .models import ArpingResult, SessionInfo, SessionUpdate, StatusInfo, UpdateResult
     from . import sessions as sess
     from .traffic import traffic_stream
+    from .arp import arping_sync
 
     api_cfg = ctx.cfg.api
     auth    = make_auth(api_cfg)
@@ -89,6 +91,20 @@ def create_app(ctx: APIContext):
         if offset < 0:
             raise HTTPException(status_code=422, detail='offset must be >= 0')
         return sess.fetch_all(limit=limit, offset=offset)
+
+    @app.get('/sessions/{id}/arping', response_model=ArpingResult, dependencies=[Depends(auth)])
+    async def arping_session(id: str):
+        if _is_ip(id):
+            ip = id
+        else:
+            s = sess.find_session(id)
+            if s is None:
+                raise HTTPException(status_code=404, detail='Session not found')
+            ip = s['ip']
+        try:
+            return await asyncio.to_thread(arping_sync, ip)
+        except OSError as e:
+            raise HTTPException(status_code=503, detail=str(e))
 
     @app.get('/sessions/{id}', response_model=SessionInfo, dependencies=[Depends(auth)])
     async def get_session(id: str):

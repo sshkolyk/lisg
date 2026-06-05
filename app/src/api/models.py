@@ -50,3 +50,13 @@ class StatusInfo(BaseModel):
 class UpdateResult(BaseModel):
     actions:      list[str]
     pre_approved: bool = False
+
+
+class ArpingResult(BaseModel):
+    ip:               str
+    iface:            str
+    reachable:        bool
+    packets_sent:     int
+    packets_received: int
+    rtt_ms:           list[float]
+    avg_rtt_ms:       Optional[float]

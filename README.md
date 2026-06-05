@@ -6,13 +6,24 @@ Userspace rewritten from perl to python.
 Key changes:
 1. Added support for newer radius (Message-Authenticator attribute).
 2. Support for backend mysql in mix with radius.
-3. Optional uvicorn API .
-      #### Endpoints:
-        GET  /status                            session counts, uptime, backend list
-        GET  /sessions?limit=&offset=           paginated session list
-        GET  /sessions/{id}                     id = ip | mac | session_id
-        PUT  /sessions/{id}                     body: {in_kbps, out_kbps, approve, block}
-                                            (approve on a non-existent IP pre-approves it)
+   3. Optional uvicorn API .
+         #### Endpoints:
+           GET  /status                            session counts, uptime, backend list
+           GET  /sessions?limit=&offset=           paginated session list
+           GET  /sessions/{id}                     id = ip | mac | session_id
+           PUT  /sessions/{id}                     body: {in_kbps, out_kbps, approve, block}
+                                               (approve on a non-existent IP pre-approves it)
+           GET  /sessions/{id}/arping              ARP-probe the session id, ip (if ip even without session)
+                                               {
+                                                   "ip": "192.168.1.10",
+                                                    "iface": "eno1",
+                                                    "reachable": true,
+                                                    "packets_sent": 3,
+                                                    "packets_received": 3,
+                                                    "rtt_ms": [0.741, 0.683, 0.712],
+                                                    "avg_rtt_ms": 0.712
+                                               }
+4. 
         GET  /traffic/stream/{id}?interval=1.0  SSE stream of in/out throughput (bps) for a
                                             single session; id = ip | mac | session_id;
                                             interval range 0.5–30 s (default 1 s).
