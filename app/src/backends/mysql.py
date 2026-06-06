@@ -87,7 +87,7 @@ class MySQLBackend(Backend):
             raise BackendUnavailable(f'MySQL auth error for {ip}: {e}')
 
         if not row:
-            log.info("MySQL: no record for '%s', rejecting", ip)
+            log.debug("MySQL: no record for '%s', rejecting", ip)
             return AuthResult(accept=False)
 
         return self._row_to_result(row)
