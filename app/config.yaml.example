@@ -101,6 +101,19 @@ unauth_session_max_duration: 60   # Lifetime of an unauthenticated session
 # Suppress all RADIUS accounting (even Start/Stop)
 # no_accounting: true
 
+# ── Thread pool sizes ──────────────────────────────────────────────────────
+# auth_workers:  max concurrent auth threads (one per new session).
+#                0 = disable authentication entirely (all sessions left unapproved).
+# acct_workers:  max concurrent accounting threads (Start/Update/Stop).
+#                0 = disable accounting entirely (no RADIUS/MySQL acct calls).
+#
+# Rule of thumb: auth_workers ≥ expected peak new-sessions/s × auth_timeout_s.
+# For MySQL accounting at high session counts (>500), a smaller pool prevents
+# thread-stack virtual-memory bloat (each OS thread reserves ~8 MB VSZ).
+#
+# auth_workers: 16
+# acct_workers: 32
+
 # Disable ANSI color codes in ISG.py output
 # no_color_output: true
 
