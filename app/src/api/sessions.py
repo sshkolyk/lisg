@@ -84,14 +84,19 @@ def _ev_to_info(ev: dict, arp: dict) -> dict:
 
 # ── public helpers ────────────────────────────────────────────────────────────
 
+def _s32(v: int) -> int:
+    """Reinterpret an unsigned 32-bit kernel counter as signed (counters can go negative)."""
+    return v if v < 0x80000000 else v - 0x100000000
+
+
 def fetch_counts() -> dict:
     sk = isg.open_socket()
     try:
-        rep      = isg.send_event(sk, {'type': isg.EVENT_SESS_GETCOUNT})
-        act      = isg.ntohl(rep['ipaddr'])
-        unap     = isg.ntohl(rep['nat_ipaddr'])
-        dying    = rep.get('port_number', 0)
-        no_acct  = rep.get('alive_interval', 0)
+        rep     = isg.send_event(sk, {'type': isg.EVENT_SESS_GETCOUNT})
+        act     = _s32(isg.ntohl(rep['ipaddr']))
+        unap    = abs(_s32(isg.ntohl(rep['nat_ipaddr'])))
+        dying   = rep.get('port_number', 0)
+        no_acct = rep.get('alive_interval', 0)
         return {
             'approved':      act - no_acct,
             'unapproved':    unap,
