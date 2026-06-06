@@ -128,6 +128,8 @@ class Config:
     no_accounting:               bool = False
     no_color_output:             bool = False
     tc_check_interval:           int  = 300
+    auth_workers:                int  = 16   # 0 = disable auth entirely
+    acct_workers:                int  = 32   # 0 = disable accounting entirely
 
     services: dict[str, Service] = field(default_factory=dict)
 
@@ -222,5 +224,7 @@ def load(path: str) -> Config:
         no_accounting=bool(raw.get('no_accounting', False)),
         no_color_output=bool(raw.get('no_color_output', False)),
         tc_check_interval=int(raw.get('tc_check_interval', 300)),
+        auth_workers=int(raw.get('auth_workers', 16)),
+        acct_workers=int(raw.get('acct_workers', 32)),
         services=services,
     )

@@ -5,6 +5,7 @@ import logging
 import re
 import socket
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from . import isg
 from . import services as svc_mod
@@ -12,6 +13,7 @@ from .config import Config, Service
 from .backends.base import AuthResult, Backend, BackendUnavailable, DynamicService
 
 log = logging.getLogger(__name__)
+
 
 
 class ISGServer:
@@ -29,6 +31,12 @@ class ISGServer:
         self._auth_pool = auth_pool
         self._acct_pool = acct_pool
         self._stop      = stop
+        aw = cfg.auth_workers
+        bw = cfg.acct_workers
+        self._auth_pool_ex = (ThreadPoolExecutor(max_workers=aw, thread_name_prefix='auth')
+                              if aw > 0 else None)
+        self._acct_pool_ex = (ThreadPoolExecutor(max_workers=bw, thread_name_prefix='acct')
+                              if bw > 0 else None)
 
     # ── public entry point ────────────────────────────────────────────────────
 
@@ -66,6 +74,10 @@ class ISGServer:
                 log.exception('Error dispatching netlink event')
 
         sk.close()
+        if self._auth_pool_ex is not None:
+            self._auth_pool_ex.shutdown(wait=False, cancel_futures=False)
+        if self._acct_pool_ex is not None:
+            self._acct_pool_ex.shutdown(wait=False, cancel_futures=False)
 
     # ── event dispatch ────────────────────────────────────────────────────────
 
@@ -74,13 +86,12 @@ class ISGServer:
         ip = isg.long2ip(ev.get('ipaddr', 0))
 
         if t == isg.EVENT_SESS_CREATE:
-            threading.Thread(target=self._auth_thread,
-                             args=(ev,), daemon=True).start()
+            if self._auth_pool_ex is not None:
+                self._auth_pool_ex.submit(self._auth_thread, ev)
 
         elif t in (isg.EVENT_SESS_START, isg.EVENT_SESS_UPDATE, isg.EVENT_SESS_STOP):
-            if not (ev.get('flags', 0) & isg.NO_ACCT):
-                threading.Thread(target=self._acct_thread,
-                                 args=(ev,), daemon=True).start()
+            if self._acct_pool_ex is not None and not (ev.get('flags', 0) & isg.NO_ACCT):
+                self._acct_pool_ex.submit(self._acct_thread, ev)
 
             flags = ev.get('flags', 0)
             if flags & isg.IS_SERVICE and t == isg.EVENT_SESS_START:
@@ -192,8 +203,8 @@ class ISGServer:
                 'port_number':  port,
                 'max_duration': self._cfg.unauth_session_max_duration,
             })
-            log.info("Session '%s' on Virtual%d rejected — no internet "
-                     "(left unapproved)", ip, port)
+            log.debug("Session '%s' on Virtual%d rejected — no internet "
+                      "(left unapproved)", ip, port)
             return
 
         # Apply the resolved services
