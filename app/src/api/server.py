@@ -40,7 +40,7 @@ def create_app(ctx: APIContext):
     from fastapi import Depends, FastAPI, HTTPException
     from fastapi.responses import StreamingResponse
     from .auth import make_auth
-    from .models import ArpingResult, SessionInfo, SessionUpdate, StatusInfo, UpdateResult
+    from .models import ArpingResult, BackendStatus, SessionInfo, SessionUpdate, StatusInfo, UpdateResult
     from . import sessions as sess
     from .traffic import traffic_stream
     from .arp import arping_sync
@@ -57,8 +57,8 @@ def create_app(ctx: APIContext):
         return StatusInfo(
             **counts,
             uptime_seconds=time.monotonic() - ctx.started_at,
-            auth_backends=[b.__class__.__name__ for b in ctx.auth_pool],
-            acct_backends=[b.__class__.__name__ for b in ctx.acct_pool],
+            auth_backends=[BackendStatus(**b.status_dict()) for b in ctx.auth_pool],
+            acct_backends=[BackendStatus(**b.status_dict()) for b in ctx.acct_pool],
         )
 
     @app.get('/sessions', response_model=list[SessionInfo], dependencies=[Depends(auth)])

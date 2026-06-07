@@ -46,6 +46,16 @@ class SessionInfo(BaseModel):
     parent_session_id: Optional[str]
 
 
+class BackendStatus(BaseModel):
+    label:            str
+    ok:               int
+    err:              int
+    last_ok_ago:      Optional[float]
+    last_err_ago:     Optional[float]
+    circuit_open:     bool
+    circuit_open_for: Optional[float]
+
+
 class StatusInfo(BaseModel):
     approved:       int
     unapproved:     int
@@ -53,8 +63,8 @@ class StatusInfo(BaseModel):
     no_accounting:  int
     total:          int
     uptime_seconds: float
-    auth_backends:  list[str]
-    acct_backends:  list[str]
+    auth_backends:  list[BackendStatus]
+    acct_backends:  list[BackendStatus]
 
 
 class UpdateResult(BaseModel):
