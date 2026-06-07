@@ -2,12 +2,14 @@
 """ISGd — ISG daemon."""
 from __future__ import annotations
 import argparse
+import json
 import logging
 import logging.handlers
 import os
 import signal
 import sys
 import threading
+import time
 
 sys.path.insert(0, os.path.dirname(__file__))
 from src import isg
@@ -156,6 +158,27 @@ class Daemon:
 
     # ── jobs ─────────────────────────────────────────────────────────────────
 
+    def job_status(self, interval: float = 5.0):
+        path = os.path.splitext(self.cfg.pid_file)[0] + '.status'
+        tmp  = path + '.tmp'
+        while not self._stop.is_set():
+            data = {
+                'written_at': time.time(),
+                'auth': [b.status_dict() for b in self._auth_pool],
+                'acct': [b.status_dict() for b in self._acct_pool],
+            }
+            try:
+                with open(tmp, 'w') as f:
+                    json.dump(data, f)
+                os.replace(tmp, path)
+            except OSError:
+                pass
+            self._stop.wait(interval)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
     def job_reload_tc(self):
         prev = tc_mod.reload(self.cfg)
         while not self._stop.is_set():
@@ -198,6 +221,7 @@ class Daemon:
             threading.Thread(target=self.job_isg,       name='ISG',        daemon=True),
             threading.Thread(target=self.job_coa,        name='CoA',        daemon=True),
             threading.Thread(target=self.job_reload_tc,  name='TC_Refresh', daemon=True),
+            threading.Thread(target=self.job_status,     name='Status',     daemon=True),
         ]
         if self._api:
             threads.append(

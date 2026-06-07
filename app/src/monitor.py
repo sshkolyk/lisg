@@ -1,11 +1,12 @@
-"""Real-time per-session throughput monitor with nload-style ASCII graphs.
+"""Real-time throughput monitor with nload-style ASCII graphs.
 
-Top of screen: live session info.
-Bottom: two time-series bar graphs (incoming / outgoing), scaled to the
-user's shaper rate (or auto-scaled when the session is unshaped).
+Two modes:
+  run()        — per-session view for a specific IP/Virtual#/Session-ID
+  run_global() — system-wide view: total throughput + top sessions
 """
 from __future__ import annotations
 
+import datetime
 import re
 import select
 import shutil
@@ -17,6 +18,11 @@ from . import isg
 
 # 9 levels: index 0 = blank, 1..8 = ⅛..full block — gives sub-row resolution.
 _BLOCKS = ' ▁▂▃▄▅▆▇█'
+
+
+def _s32(v: int) -> int:
+    """Reinterpret unsigned 32-bit kernel counter as signed (can go negative)."""
+    return v if v < 0x80000000 else v - 0x100000000
 
 
 # ── formatting ────────────────────────────────────────────────────────────────
@@ -411,6 +417,229 @@ def _render(sess, arg: str, in_hist: deque, out_hist: deque,
 
     out.append(_c(footer_color, footer, no_color) + '\033[K')
     out.append('\033[J')                                # clear to end of screen
+
+    sys.stdout.write('\n'.join(out))
+    sys.stdout.flush()
+
+
+# ── global monitor ────────────────────────────────────────────────────────────
+
+def run_global(sk, interval: float = 1.0, no_color: bool = False,
+               status_path: str | None = None) -> int:
+    """System-wide monitor: total IN/OUT throughput + top sessions by rate."""
+    is_tty = sys.stdin.isatty()
+    old_term = None
+    if is_tty:
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        old_term = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+
+    sys.stdout.write('\033[?25l')
+    in_hist:    deque = deque(maxlen=400)
+    out_hist:   deque = deque(maxlen=400)
+    prev_bytes: dict  = {}     # {ipaddr: (in_bytes, out_bytes)}
+    prev_t:     float = 0.0
+    top_rates:  list  = []     # [(ipaddr, (in_bps, out_bps))]
+    counts:     dict | None = None
+    backends:   dict | None = None
+    status_msg: str   = ''
+
+    HELP = " [q]uit  [r]eset-graph"
+
+    def cleanup():
+        sys.stdout.write('\033[?25h\033[0m\n')
+        sys.stdout.flush()
+        if old_term is not None:
+            import termios
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_term)
+
+    try:
+        while True:
+            t = time.monotonic()
+
+            # Session counts
+            try:
+                rep   = isg.send_event(sk, {'type': isg.EVENT_SESS_GETCOUNT})
+                act   = _s32(isg.ntohl(rep['ipaddr']))
+                unap  = abs(_s32(isg.ntohl(rep['nat_ipaddr'])))
+                dying = rep.get('port_number', 0)
+                noacc = rep.get('alive_interval', 0)
+                counts = {
+                    'total':      act + unap + dying,
+                    'approved':   max(0, act - noacc),
+                    'unapproved': unap,
+                    'dying':      dying,
+                    'no_acct':    noacc,
+                }
+            except OSError:
+                pass
+
+            # Per-session byte deltas → aggregate throughput
+            new_prev: dict  = {}
+            cur_rates: dict = {}
+            total_in = total_out = 0.0
+            try:
+                rows, _ = isg.get_list(sk, {'type': isg.EVENT_SESS_GETLIST}, timeout=2)
+                for r in rows:
+                    if r['type'] != isg.EVENT_SESS_INFO or not r.get('ipaddr'):
+                        continue
+                    if r.get('flags', 0) & isg.IS_SERVICE:
+                        continue
+                    ip = r['ipaddr']
+                    ib, ob = r['in_bytes'], r['out_bytes']
+                    new_prev[ip] = (ib, ob)
+                    if prev_t > 0 and ip in prev_bytes:
+                        dt   = max(t - prev_t, 1e-6)
+                        ibps = max(ib - prev_bytes[ip][0], 0) * 8 / dt
+                        obps = max(ob - prev_bytes[ip][1], 0) * 8 / dt
+                        total_in  += ibps
+                        total_out += obps
+                        if ibps + obps > 0:
+                            cur_rates[ip] = (ibps, obps)
+            except OSError:
+                pass
+
+            if prev_t > 0:
+                in_hist.append(total_in)
+                out_hist.append(total_out)
+                top_rates = sorted(cur_rates.items(),
+                                   key=lambda kv: kv[1][0] + kv[1][1],
+                                   reverse=True)[:10]
+
+            prev_bytes = new_prev
+            prev_t = t
+
+            if status_path:
+                try:
+                    import json
+                    with open(status_path) as _sf:
+                        backends = json.load(_sf)
+                except (OSError, ValueError):
+                    pass
+
+            _render_global(counts, in_hist, out_hist, top_rates, backends, no_color,
+                           HELP + (f'    — {status_msg}' if status_msg else ''))
+
+            deadline = t + interval
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                if not (is_tty and select.select([sys.stdin], [], [], remaining)[0]):
+                    continue
+                ch = sys.stdin.read(1)
+                if ch in ('q', 'Q', '\x03'):
+                    return 0
+                elif ch in ('r', 'R'):
+                    in_hist.clear(); out_hist.clear()
+                    prev_bytes.clear(); prev_t = 0.0
+                    status_msg = 'graph reset'
+                    break
+
+    except (KeyboardInterrupt, OSError):
+        return 0
+    finally:
+        cleanup()
+
+
+def _render_global(counts: dict | None, in_hist: deque, out_hist: deque,
+                   top_rates: list, backends: dict | None,
+                   no_color: bool, footer: str = '') -> None:
+    cols, lines = shutil.get_terminal_size((80, 24))
+    gw = max(20, cols - 2)
+    sep = '─' * gw
+
+    def stats(hist):
+        if not hist:
+            return 0.0, 0.0, 0.0
+        return hist[-1], sum(hist) / len(hist), max(hist)
+
+    in_cur,  in_avg,  in_max  = stats(in_hist)
+    out_cur, out_avg, out_max = stats(out_hist)
+    in_ceil  = (in_max  * 1.2) or 1.0
+    out_ceil = (out_max * 1.2) or 1.0
+
+    now = datetime.datetime.now().strftime('%H:%M:%S')
+    out = ['\033[H']
+    out.append(_c('1', f'ISG Global Monitor   {now}', no_color) + '\033[K')
+    out.append(_c('90', sep, no_color) + '\033[K')
+
+    if counts is not None:
+        cs = (f" Sessions  total {counts['total']}"
+              f"  approved {_c('32', str(counts['approved']), no_color)}"
+              f"  unapproved {_c('31', str(counts['unapproved']), no_color)}"
+              f"  dying {counts['dying']}")
+        out.append(cs + '\033[K')
+    else:
+        out.append(_c('31', ' kernel not responding', no_color) + '\033[K')
+
+    if backends:
+        file_age = max(0.0, time.time() - backends.get('written_at', time.time()))
+
+        def _fmt_ago(ago, extra=0.0):
+            if ago is None:
+                return _c('90', '     --', no_color)
+            total = ago + extra
+            if total < 60:
+                return f'{total:5.1f}s'
+            return f'{total/60:5.1f}m'
+
+        def _backend_line(role, b):
+            ok_ago  = _fmt_ago(b.get('last_ok_ago'),  file_age)
+            err_ago = _fmt_ago(b.get('last_err_ago'), file_age)
+            n_err   = b.get('err', 0)
+            err_col = '31' if n_err > 0 else '90'
+            err_s   = _c(err_col, f'err {n_err:>4}', no_color)
+            return (f"  {role:<4} {b.get('label', '?'):<28}"
+                    f"  ok {b.get('ok', 0):>6}"
+                    f"  {err_s}"
+                    f"  last ok {ok_ago}"
+                    f"  last err {err_ago}")
+
+        for b in backends.get('auth', []):
+            out.append(_backend_line('auth', b) + '\033[K')
+        for b in backends.get('acct', []):
+            out.append(_backend_line('acct', b) + '\033[K')
+
+    in_s  = (f" IN   cur {_fmt_bps(in_cur)}  avg {_fmt_bps(in_avg)}"
+             f"  max {_fmt_bps(in_max)}")
+    out_s = (f" OUT  cur {_fmt_bps(out_cur)}  avg {_fmt_bps(out_avg)}"
+             f"  max {_fmt_bps(out_max)}")
+    if len(in_s) + 3 + len(out_s) - 1 <= cols - 1:
+        out.append(_c('32', in_s, no_color) + '   ' +
+                   _c('36', out_s.lstrip(), no_color) + '\033[K')
+    else:
+        out.append(_c('32', in_s, no_color) + '\033[K')
+        out.append(_c('36', out_s, no_color) + '\033[K')
+    out.append(_c('90', sep, no_color) + '\033[K')
+
+    # Top sessions: show as many as the terminal allows while keeping gh >= 3.
+    # Budget: lines - len(out) - 11  (11 = 2 graph labels + 2 baselines + 3*2 min rows + footer)
+    avail = lines - len(out) - 11
+    top_n = min(len(top_rates), max(0, avail - 2))   # -2 for header + sep
+    if top_n > 0:
+        out.append(_c('1', ' Top sessions by throughput:', no_color) + '\033[K')
+        for ip, (ibps, obps) in top_rates[:top_n]:
+            row = f"   {isg.long2ip(ip):<16} {_fmt_bps(ibps)} ↓  {_fmt_bps(obps)} ↑"
+            out.append(row + '\033[K')
+        out.append(_c('90', sep, no_color) + '\033[K')
+
+    # Split remaining vertical space between the two graphs
+    used = len(out) + 2 * 2 + 1   # 2 graph labels + 2 baselines + footer
+    gh = max(3, (lines - used) // 2)
+
+    out.append(_c('32', ' Incoming', no_color) + '\033[K')
+    for row in _graph_block(in_hist, in_ceil, gw, gh, '32', no_color):
+        out.append(row + '\033[K')
+
+    out.append(_c('36', ' Outgoing', no_color) + '\033[K')
+    for row in _graph_block(out_hist, out_ceil, gw, gh, '36', no_color):
+        out.append(row + '\033[K')
+
+    out.append(_c('90', footer, no_color) + '\033[K')
+    out.append('\033[J')
 
     sys.stdout.write('\n'.join(out))
     sys.stdout.flush()

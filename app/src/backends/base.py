@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional
@@ -92,6 +93,31 @@ class Backend(ABC):
     account()      is called for Start / Interim / Stop events.
     Both methods are invoked from worker threads and MUST be thread-safe.
     """
+
+    def __init__(self):
+        self.label      = ''
+        self.ok_count   = 0
+        self.err_count  = 0
+        self._last_ok_t  = 0.0   # time.monotonic() of last success
+        self._last_err_t = 0.0   # time.monotonic() of last error
+
+    def record_ok(self) -> None:
+        self.ok_count += 1
+        self._last_ok_t = time.monotonic()
+
+    def record_err(self) -> None:
+        self.err_count += 1
+        self._last_err_t = time.monotonic()
+
+    def status_dict(self) -> dict:
+        now = time.monotonic()
+        return {
+            'label':        self.label,
+            'ok':           self.ok_count,
+            'err':          self.err_count,
+            'last_ok_ago':  round(now - self._last_ok_t,  1) if self._last_ok_t  else None,
+            'last_err_ago': round(now - self._last_err_t, 1) if self._last_err_t else None,
+        }
 
     @abstractmethod
     def authenticate(self, ev: dict) -> AuthResult:

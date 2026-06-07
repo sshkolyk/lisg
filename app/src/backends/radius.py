@@ -50,11 +50,13 @@ class RadiusBackend(Backend):
 
     def __init__(self, entry: ServerEntry, cfg: Config,
                  nas_ip: str, nas_id: str, rad_dict: RadDict):
+        super().__init__()
         self._entry    = entry
         self._cfg      = cfg
         self._nas_ip   = nas_ip
         self._nas_id   = nas_id
         self._rad_dict = rad_dict
+        self.label     = f'radius {entry.server}'
 
     # ── public interface ──────────────────────────────────────────────────────
 
@@ -74,13 +76,17 @@ class RadiusBackend(Backend):
                               dict=self._rad_dict,
                               packet=reply_bytes)
             if reply.id != rid:
+                self.record_err()
                 raise BackendUnavailable(f'{host}:{port} returned wrong id')
+            self.record_ok()
             return self._parse_auth_reply(reply)
         except socket.timeout:
+            self.record_err()
             raise BackendUnavailable(f'RADIUS timeout from {host}:{port}')
         except BackendUnavailable:
             raise
         except OSError as e:
+            self.record_err()
             raise BackendUnavailable(f'RADIUS error to {host}:{port}: {e}')
 
     def account(self, ev: dict) -> None:
@@ -95,9 +101,12 @@ class RadiusBackend(Backend):
                 sock.connect((host, port))
                 sock.send(data)
                 sock.recv(4096)     # Accounting-Response; content ignored
+            self.record_ok()
         except socket.timeout:
+            self.record_err()
             log.error('RADIUS acct timeout from %s:%d', host, port)
         except OSError as e:
+            self.record_err()
             log.error('RADIUS acct error to %s:%d: %s', host, port, e)
 
     # ── reply parsing ─────────────────────────────────────────────────────────

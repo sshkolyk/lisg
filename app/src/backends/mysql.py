@@ -24,6 +24,7 @@ class MySQLBackend(Backend):
     """
 
     def __init__(self, entry: ServerEntry, cfg: Config, nas_ip: str, nas_id: str):
+        super().__init__()
         if pymysql is None:
             raise ImportError('pymysql required for MySQL backend: pip install pymysql')
         self._entry  = entry
@@ -31,6 +32,7 @@ class MySQLBackend(Backend):
         self._nas_ip = nas_ip
         self._nas_id = nas_id
         self._local  = threading.local()
+        self.label   = f'mysql {entry.host}:{entry.port}'
 
     # ── DB connection ─────────────────────────────────────────────────────────
 
@@ -84,8 +86,10 @@ class MySQLBackend(Backend):
                 row = cur.fetchone()
         except Exception as e:
             self._local.conn = None
+            self.record_err()
             raise BackendUnavailable(f'MySQL auth error for {ip}: {e}')
 
+        self.record_ok()
         if not row:
             log.debug("MySQL: no record for '%s', rejecting", ip)
             return AuthResult(accept=False)
@@ -122,9 +126,11 @@ class MySQLBackend(Backend):
         try:
             with self._conn().cursor() as cur:
                 cur.execute(query, params)
+            self.record_ok()
         except Exception as e:
             log.error('MySQL acct error (%s) for %s: %s', type_name, params['ip'], e)
             self._local.conn = None
+            self.record_err()
 
     def close(self) -> None:
         conn = getattr(self._local, 'conn', None)

@@ -25,7 +25,7 @@ Commands:
   show_count
   show_session  <IP | Virtual# | Session-ID>
   show_services <IP | Virtual# | Session-ID>
-  monitor       <IP | Virtual# | Session-ID>
+  monitor       [IP | Virtual# | Session-ID]  (no arg = total throughput view)
   clear         <IP | Virtual# | Session-ID>
   change_rate   <IP | Virtual# | Session-ID> <in_kbps> <out_kbps>
 
@@ -175,6 +175,7 @@ def main():
 
     # Read settings from config.yaml if present alongside this script
     active_columns = list(ALL_COLUMNS)
+    status_path: str | None = None
     conf_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
     if os.path.isfile(conf_path):
         try:
@@ -184,6 +185,8 @@ def main():
             _no_color = bool(_cfg.get('no_color_output', False))
             if 'columns' in _cfg and isinstance(_cfg['columns'], list):
                 active_columns = [c for c in _cfg['columns'] if c in ALL_COLUMNS]
+            pid_file = _cfg.get('pid_file', '/var/run/ISGd.pid')
+            status_path = os.path.splitext(pid_file)[0] + '.status'
         except Exception:
             pass
 
@@ -209,9 +212,12 @@ def main():
                 print('clear: session not found', file=sys.stderr)
                 rc = 1
 
-        elif len(args) == 2 and args[0] == 'monitor':
+        elif len(args) in (1, 2) and args[0] == 'monitor':
             from src import monitor
-            rc = monitor.run(sk, ev, args[1], no_color=_no_color)
+            if len(args) == 2:
+                rc = monitor.run(sk, ev, args[1], no_color=_no_color)
+            else:
+                rc = monitor.run_global(sk, status_path=status_path, no_color=_no_color)
 
         elif len(args) == 4 and args[0] == 'change_rate':
             in_r  = int(args[2]) * 1000
