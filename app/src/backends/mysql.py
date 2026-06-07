@@ -37,17 +37,11 @@ class MySQLBackend(Backend):
     # ── DB connection ─────────────────────────────────────────────────────────
 
     def _conn(self):
-        """Return a per-thread DB connection, creating or reconnecting as needed."""
+        """Return a per-thread DB connection, creating one only when needed."""
         conn = getattr(self._local, 'conn', None)
         if conn is None:
             conn = self._connect()
             self._local.conn = conn
-        else:
-            try:
-                conn.ping(reconnect=True)
-            except Exception:
-                conn = self._connect()
-                self._local.conn = conn
         return conn
 
     def _connect(self):
