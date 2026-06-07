@@ -87,11 +87,13 @@ class ISGServer:
 
         if t == isg.EVENT_SESS_CREATE:
             if self._auth_pool_ex is not None:
-                self._auth_pool_ex.submit(self._auth_thread, ev)
+                if any(not b.is_circuit_open() for b in self._auth_pool):
+                    self._auth_pool_ex.submit(self._auth_thread, ev)
 
         elif t in (isg.EVENT_SESS_START, isg.EVENT_SESS_UPDATE, isg.EVENT_SESS_STOP):
             if self._acct_pool_ex is not None and not (ev.get('flags', 0) & isg.NO_ACCT):
-                self._acct_pool_ex.submit(self._acct_thread, ev)
+                if any(not b.is_circuit_open() for b in self._acct_pool):
+                    self._acct_pool_ex.submit(self._acct_thread, ev)
 
             flags = ev.get('flags', 0)
             if flags & isg.IS_SERVICE and t == isg.EVENT_SESS_START:
@@ -111,6 +113,9 @@ class ISGServer:
 
         result = None
         for backend in self._auth_pool:
+            if backend.is_circuit_open():
+                log.debug("Auth: skipping '%s' (circuit open)", backend.label)
+                continue
             try:
                 result = backend.authenticate(ev)
                 break
@@ -130,6 +135,9 @@ class ISGServer:
     def _acct_thread(self, ev: dict) -> None:
         """All accounting backends receive the record (side by side)."""
         for backend in self._acct_pool:
+            if backend.is_circuit_open():
+                log.debug("Acct: skipping '%s' (circuit open)", backend.label)
+                continue
             try:
                 backend.account(ev)
             except BackendUnavailable as e:

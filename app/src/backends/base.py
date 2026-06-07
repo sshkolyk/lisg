@@ -85,6 +85,10 @@ def apply_account_info(result: AuthResult, values: list) -> None:
             log.error("Unknown Cisco-Account-Info value '%s'", val)
 
 
+_CB_THRESHOLD = 3    # consecutive errors before opening circuit
+_CB_PENALTY   = 30   # seconds to stay open before one retry is allowed
+
+
 class Backend(ABC):
     """
     All authentication and accounting goes through this interface.
@@ -95,28 +99,48 @@ class Backend(ABC):
     """
 
     def __init__(self):
-        self.label      = ''
-        self.ok_count   = 0
-        self.err_count  = 0
+        self.label       = ''
+        self.ok_count    = 0
+        self.err_count   = 0
         self._last_ok_t  = 0.0   # time.monotonic() of last success
         self._last_err_t = 0.0   # time.monotonic() of last error
+        self._consec_err = 0     # consecutive errors; reset on success
+        self._open_until = 0.0   # circuit open until this monotonic time
 
     def record_ok(self) -> None:
-        self.ok_count += 1
-        self._last_ok_t = time.monotonic()
+        self.ok_count    += 1
+        self._last_ok_t   = time.monotonic()
+        self._consec_err  = 0
 
     def record_err(self) -> None:
-        self.err_count += 1
-        self._last_err_t = time.monotonic()
+        self.err_count   += 1
+        self._last_err_t  = time.monotonic()
+        self._consec_err += 1
+        if self._consec_err >= _CB_THRESHOLD:
+            just_opened = time.monotonic() >= self._open_until
+            self._open_until = time.monotonic() + _CB_PENALTY
+            if just_opened:
+                log.warning("Backend '%s' circuit opened — skipping for %ds",
+                            self.label, _CB_PENALTY)
+
+    def is_circuit_open(self) -> bool:
+        if self._open_until and time.monotonic() >= self._open_until:
+            # Penalty expired: fresh start — next request is the probe.
+            self._open_until = 0.0
+            self._consec_err = 0
+        return self._open_until > 0
 
     def status_dict(self) -> dict:
         now = time.monotonic()
+        open_for = max(0.0, self._open_until - now)
         return {
-            'label':        self.label,
-            'ok':           self.ok_count,
-            'err':          self.err_count,
-            'last_ok_ago':  round(now - self._last_ok_t,  1) if self._last_ok_t  else None,
-            'last_err_ago': round(now - self._last_err_t, 1) if self._last_err_t else None,
+            'label':           self.label,
+            'ok':              self.ok_count,
+            'err':             self.err_count,
+            'last_ok_ago':     round(now - self._last_ok_t,  1) if self._last_ok_t  else None,
+            'last_err_ago':    round(now - self._last_err_t, 1) if self._last_err_t else None,
+            'circuit_open':    open_for > 0,
+            'circuit_open_for': round(open_for, 1) if open_for > 0 else None,
         }
 
     @abstractmethod
