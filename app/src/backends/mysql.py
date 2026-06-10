@@ -16,6 +16,9 @@ try:
 except ImportError:
     pymysql = None  # type: ignore
 
+# MySQL CR_SERVER_GONE_ERROR / CR_SERVER_LOST — stale idle connection
+_CONN_LOST = (2006, 2013)
+
 
 class MySQLBackend(Backend):
     """
@@ -57,6 +60,26 @@ class MySQLBackend(Backend):
             autocommit=True,
         )
 
+    # ── retry helper ──────────────────────────────────────────────────────────
+
+    def _execute(self, fn, context: str):
+        """Run fn(cursor) with one reconnect retry on lost-connection errors."""
+        exc = None
+        for attempt in range(2):
+            try:
+                with self._conn().cursor() as cur:
+                    return fn(cur)
+            except pymysql.err.OperationalError as e:
+                self._local.conn = None
+                exc = e
+                if attempt == 0 and e.args[0] in _CONN_LOST:
+                    log.info('MySQL %s: reconnecting after lost connection (%s)', context, e)
+                    continue
+                if attempt == 1:
+                    log.warning('MySQL %s: reconnect did not help (%s)', context, e)
+                break
+        raise exc
+
     # ── public interface ──────────────────────────────────────────────────────
 
     def _query(self, key: str) -> str:
@@ -75,11 +98,11 @@ class MySQLBackend(Backend):
     def authenticate(self, ev: dict) -> AuthResult:
         ip = isg.long2ip(ev.get('ipaddr', 0))
         try:
-            with self._conn().cursor() as cur:
+            def _q(cur):
                 cur.execute(self._query('auth_query'), {'ip': ip, 'nas_ip': self._nas_ip})
-                row = cur.fetchone()
-        except Exception as e:
-            self._local.conn = None
+                return cur.fetchone()
+            row = self._execute(_q, 'auth')
+        except pymysql.err.OperationalError as e:
             self.record_err()
             raise BackendUnavailable(f'MySQL auth error for {ip}: {e}')
 
@@ -118,12 +141,10 @@ class MySQLBackend(Backend):
         params['acct_type'] = type_name
 
         try:
-            with self._conn().cursor() as cur:
-                cur.execute(query, params)
+            self._execute(lambda cur: cur.execute(query, params), 'acct')
             self.record_ok()
-        except Exception as e:
+        except pymysql.err.OperationalError as e:
             log.error('MySQL acct error (%s) for %s: %s', type_name, params['ip'], e)
-            self._local.conn = None
             self.record_err()
 
     def close(self) -> None:
