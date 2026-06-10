@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 from .. import isg
 from ..config import Config, ServerEntry
@@ -40,11 +41,21 @@ class MySQLBackend(Backend):
     # ── DB connection ─────────────────────────────────────────────────────────
 
     def _conn(self):
-        """Return a per-thread DB connection, creating one only when needed."""
+        """Return a per-thread DB connection, recycling it when max age is reached."""
         conn = getattr(self._local, 'conn', None)
+        if conn is not None:
+            max_age = self._cfg.mysql.conn_max_age if self._cfg.mysql else 3600
+            if time.monotonic() - getattr(self._local, 'conn_born', 0.0) >= max_age:
+                log.debug('MySQL: recycling connection after %ds', max_age)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
         if conn is None:
             conn = self._connect()
             self._local.conn = conn
+            self._local.conn_born = time.monotonic()
         return conn
 
     def _connect(self):

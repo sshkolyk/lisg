@@ -68,6 +68,7 @@ class MySQLConfig:
     acct_start_query:  str = _DEFAULT_ACCT_START
     acct_update_query: str = _DEFAULT_ACCT_UPDATE
     acct_stop_query:   str = _DEFAULT_ACCT_STOP
+    conn_max_age:      int = 3600
 
 
 @dataclass
@@ -186,6 +187,7 @@ def load(path: str) -> Config:
             acct_start_query=section.get('acct_start_query', _DEFAULT_ACCT_START),
             acct_update_query=section.get('acct_update_query', _DEFAULT_ACCT_UPDATE),
             acct_stop_query=section.get('acct_stop_query', _DEFAULT_ACCT_STOP),
+            conn_max_age=int(section.get('conn_max_age', 3600)),
         )
 
     services = {}
