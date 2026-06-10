@@ -139,11 +139,13 @@ unauth_session_max_duration: 60   # Lifetime of an unauthenticated session
 # This section overrides the default SQL queries and connection settings for
 # ALL mysql-type entries.
 #
-# conn_max_age: 3600   # Max per-thread connection lifetime (seconds).
+# conn_max_age: 3600   # Max per-thread connection lifetime (seconds). Default: 3600.
 #                      # Each worker thread holds its own MySQL connection;
 #                      # when the connection reaches this age it is closed and
 #                      # a fresh one is opened on the next request.
-#                      # Set lower if your MySQL server has a short wait_timeout.
+#                      # Must be less than MySQL's wait_timeout (SHOW VARIABLES
+#                      # LIKE 'wait_timeout') to avoid "Lost connection" errors.
+#                      # A value of ~80% of wait_timeout is a safe margin.
 #
 # Available %(name)s params for auth_query:
 #   %(ip)s, %(nas_ip)s

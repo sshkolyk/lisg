@@ -50,6 +50,9 @@ class BackendStatus(BaseModel):
     label:            str
     ok:               int
     err:              int
+    success_rate:     float
+    error_rate:       float
+    total_rate:       float
     last_ok_ago:      Optional[float]
     last_err_ago:     Optional[float]
     circuit_open:     bool

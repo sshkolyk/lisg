@@ -87,6 +87,55 @@ def apply_account_info(result: AuthResult, values: list) -> None:
 
 _CB_THRESHOLD = 3    # consecutive errors before opening circuit
 _CB_PENALTY   = 30   # seconds to stay open before one retry is allowed
+_RATE_WINDOW  = 60.0 # sliding window width for req/s calculation
+
+
+class RateCounter:
+    """Two-bucket sliding window rate counter (events/s over last 60 s)."""
+
+    __slots__ = ('_curr', '_prev', '_ts')
+
+    def __init__(self):
+        self._curr = 0
+        self._prev = 0
+        self._ts   = 0.0
+
+    def tick(self) -> None:
+        now = time.monotonic()
+        if self._ts == 0.0:
+            self._ts = now
+        elif now - self._ts >= _RATE_WINDOW:
+            self._prev = self._curr
+            self._curr = 0
+            self._ts   = now
+        self._curr += 1
+
+    @property
+    def value(self) -> float:
+        now = time.monotonic()
+        if self._ts == 0.0:
+            return 0.0
+        elapsed_curr = min(now - self._ts, _RATE_WINDOW)
+        prev_weight  = 1.0 - elapsed_curr / _RATE_WINDOW
+        return round((self._prev * prev_weight + self._curr) / _RATE_WINDOW, 2)
+
+
+@dataclass
+class BackendStats:
+    label:            str
+    ok:               int
+    err:              int
+    success_rate:     float
+    error_rate:       float
+    total_rate:       float
+    last_ok_ago:      Optional[float]
+    last_err_ago:     Optional[float]
+    circuit_open:     bool
+    circuit_open_for: Optional[float]
+
+    def to_dict(self) -> dict:
+        from dataclasses import asdict
+        return asdict(self)
 
 
 class Backend(ABC):
@@ -99,29 +148,42 @@ class Backend(ABC):
     """
 
     def __init__(self):
-        self.label       = ''
-        self.ok_count    = 0
-        self.err_count   = 0
-        self._last_ok_t  = 0.0   # time.monotonic() of last success
-        self._last_err_t = 0.0   # time.monotonic() of last error
-        self._consec_err = 0     # consecutive errors; reset on success
-        self._open_until = 0.0   # circuit open until this monotonic time
+        self.label        = ''
+        self.ok_count     = 0
+        self.err_count    = 0
+        self._last_ok_t   = 0.0   # time.monotonic() of last success
+        self._last_err_t  = 0.0   # time.monotonic() of last error
+        self._consec_err  = 0     # consecutive errors; reset on success
+        self._open_until  = 0.0   # circuit open until this monotonic time
+        self._ok_rate     = RateCounter()
+        self._err_rate    = RateCounter()
+        self._total_rate  = RateCounter()
+
+    def _record(self, success: bool) -> None:
+        now = time.monotonic()
+        self._total_rate.tick()
+        if success:
+            self.ok_count    += 1
+            self._last_ok_t   = now
+            self._consec_err  = 0
+            self._ok_rate.tick()
+        else:
+            self.err_count   += 1
+            self._last_err_t  = now
+            self._consec_err += 1
+            self._err_rate.tick()
+            if self._consec_err >= _CB_THRESHOLD:
+                just_opened = now >= self._open_until
+                self._open_until = now + _CB_PENALTY
+                if just_opened:
+                    log.warning("Backend '%s' circuit opened — skipping for %ds",
+                                self.label, _CB_PENALTY)
 
     def record_ok(self) -> None:
-        self.ok_count    += 1
-        self._last_ok_t   = time.monotonic()
-        self._consec_err  = 0
+        self._record(True)
 
     def record_err(self) -> None:
-        self.err_count   += 1
-        self._last_err_t  = time.monotonic()
-        self._consec_err += 1
-        if self._consec_err >= _CB_THRESHOLD:
-            just_opened = time.monotonic() >= self._open_until
-            self._open_until = time.monotonic() + _CB_PENALTY
-            if just_opened:
-                log.warning("Backend '%s' circuit opened — skipping for %ds",
-                            self.label, _CB_PENALTY)
+        self._record(False)
 
     def is_circuit_open(self) -> bool:
         if self._open_until and time.monotonic() >= self._open_until:
@@ -130,18 +192,24 @@ class Backend(ABC):
             self._consec_err = 0
         return self._open_until > 0
 
-    def status_dict(self) -> dict:
-        now = time.monotonic()
+    def get_stats(self) -> BackendStats:
+        now      = time.monotonic()
         open_for = max(0.0, self._open_until - now)
-        return {
-            'label':           self.label,
-            'ok':              self.ok_count,
-            'err':             self.err_count,
-            'last_ok_ago':     round(now - self._last_ok_t,  1) if self._last_ok_t  else None,
-            'last_err_ago':    round(now - self._last_err_t, 1) if self._last_err_t else None,
-            'circuit_open':    open_for > 0,
-            'circuit_open_for': round(open_for, 1) if open_for > 0 else None,
-        }
+        return BackendStats(
+            label            = self.label,
+            ok               = self.ok_count,
+            err              = self.err_count,
+            success_rate     = self._ok_rate.value,
+            error_rate       = self._err_rate.value,
+            total_rate       = self._total_rate.value,
+            last_ok_ago      = round(now - self._last_ok_t,  1) if self._last_ok_t  else None,
+            last_err_ago     = round(now - self._last_err_t, 1) if self._last_err_t else None,
+            circuit_open     = open_for > 0,
+            circuit_open_for = round(open_for, 1) if open_for > 0 else None,
+        )
+
+    def status_dict(self) -> dict:
+        return self.get_stats().to_dict()
 
     @abstractmethod
     def authenticate(self, ev: dict) -> AuthResult:

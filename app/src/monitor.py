@@ -592,10 +592,12 @@ def _render_global(counts: dict | None, in_hist: deque, out_hist: deque,
             n_err   = b.get('err', 0)
             err_col = '31' if n_err > 0 else '90'
             err_s   = _c(err_col, f'err {n_err:>4}', no_color)
+            tot_s   = _c('90', f'{b.get("total_rate", 0.0):5.2f}/s', no_color)
             cb_open = b.get('circuit_open', False)
             cb_s    = (_c('31;1', f" OPEN {b['circuit_open_for']:.0f}s", no_color)
                        if cb_open else '')
             return (f"  {role:<4} {b.get('label', '?'):<28}"
+                    f"  {tot_s}"
                     f"  ok {b.get('ok', 0):>6}"
                     f"  {err_s}"
                     f"  last ok {ok_ago}"
