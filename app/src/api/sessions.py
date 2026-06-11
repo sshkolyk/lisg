@@ -200,12 +200,15 @@ def apply_update(session: dict, upd) -> dict:
     return {'actions': actions}
 
 
+_UINT32_MAX = 4_294_967_295
+
+
 def _apply_rates(ev: dict, upd) -> None:
     if upd.in_kbps is not None:
         r = upd.in_kbps * 1000
         ev['in_rate']  = r
-        ev['in_burst'] = int(r * 1.5)
+        ev['in_burst'] = min(int(r * 1.5), _UINT32_MAX)
     if upd.out_kbps is not None:
         r = upd.out_kbps * 1000
         ev['out_rate']  = r
-        ev['out_burst'] = int(r * 1.5)
+        ev['out_burst'] = min(int(r * 1.5), _UINT32_MAX)

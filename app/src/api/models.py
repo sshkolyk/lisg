@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field
 
 class SessionUpdate(BaseModel):
     """PUT /sessions/{id} — all fields optional; any combination accepted."""
-    in_kbps:  Optional[int]  = Field(None, ge=0, description='Input (upload) rate kbps')
-    out_kbps: Optional[int]  = Field(None, ge=0, description='Output (download) rate kbps')
+    in_kbps:  Optional[int]  = Field(None, ge=0, le=4_000_000, description='Input (upload) rate kbps')
+    out_kbps: Optional[int]  = Field(None, ge=0, le=4_000_000, description='Output (download) rate kbps')
     approve:  Optional[bool] = Field(None, description='Approve session')
     block:    Optional[bool] = Field(None, description='Block / disconnect session')
 
