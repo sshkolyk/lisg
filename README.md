@@ -137,6 +137,19 @@ Edit `config.yaml`, then run:
 ./app/ISG.py           # CLI tool
 ```
 
+### Session management CLI
+
+```bash
+./app/ISG.py                                          # list all sessions
+./app/ISG.py show_count                               # session counters
+./app/ISG.py show_session <IP | Virtual# | Sess-ID>
+./app/ISG.py show_services <IP | Virtual# | Sess-ID>
+./app/ISG.py clear <IP | Virtual# | Sess-ID>          # clear one session
+./app/ISG.py clear_all                                # clear all sessions instantly
+./app/ISG.py change_rate <IP | Virtual# | Sess-ID> <in_kbps> <out_kbps>
+./app/ISG.py monitor <IP | Virtual# | Sess-ID>
+```
+
 ### Redirect to authorisation portal
 
 ```bash

@@ -27,6 +27,7 @@ Commands:
   show_services <IP | Virtual# | Session-ID>
   monitor       [IP | Virtual# | Session-ID]  (no arg = total throughput view)
   clear         <IP | Virtual# | Session-ID>
+  clear_all
   change_rate   <IP | Virtual# | Session-ID> <in_kbps> <out_kbps>
 
 Options:
@@ -211,6 +212,14 @@ def main():
             if rep['type'] != isg.EVENT_KERNEL_ACK:
                 print('clear: session not found', file=sys.stderr)
                 rc = 1
+
+        elif len(args) == 1 and args[0] == 'clear_all':
+            sessions, _ = isg.get_list(sk, {'type': isg.EVENT_SESS_GETLIST})
+            parent_sessions = [s for s in sessions if not (s.get('flags', 0) & isg.IS_SERVICE)]
+            for s in parent_sessions:
+                isg.send_only(sk, {'type': isg.EVENT_SESS_CLEAR,
+                                   'port_number': s['port_number']})
+            print(f'Cleared {len(parent_sessions)} sessions')
 
         elif len(args) in (1, 2) and args[0] == 'monitor':
             from src import monitor
