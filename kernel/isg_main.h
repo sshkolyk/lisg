@@ -21,7 +21,6 @@
 #include "kcompat.h"
 
 #define ISG_NETLINK_MAIN     MAX_LINKS - 1
-#define PORT_BITMAP_SIZE     65536
 #define INITIAL_MAX_DURATION (60ULL * NSEC_PER_SEC)
 #define MAX_SD_CLASSES       16
 
@@ -302,6 +301,7 @@ struct isg_net {
 	u8 listener_ver;
 
 	unsigned long *port_bitmap;
+	unsigned int   max_sessions;
 
 	struct ctl_table_header *sysctl_hdr;
 

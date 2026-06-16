@@ -45,6 +45,10 @@ static unsigned int nr_buckets = 8192;
 module_param(nr_buckets, uint, 0400);
 MODULE_PARM_DESC(nr_buckets, "Number of buckets to store current sessions list");
 
+static unsigned int max_sessions = 65536;
+module_param(max_sessions, uint, 0400);
+MODULE_PARM_DESC(max_sessions, "Maximum number of concurrent sessions (port bitmap size)");
+
 unsigned int nehash_key_len = 20;
 module_param(nehash_key_len, uint, 0400);
 MODULE_PARM_DESC(nehash_key_len, "Network hash key length (in bits)");
@@ -566,9 +570,27 @@ static void isg_create_session_notify(struct isg_net *isg_net, struct isg_sessio
 
 	get_random_bytes(&(is->info.id), sizeof(is->info.id));
 
-	port_number = find_first_zero_bit(isg_net->port_bitmap, PORT_BITMAP_SIZE);
-	while(test_and_set_bit(port_number, isg_net->port_bitmap)) {
-		port_number = find_next_zero_bit(isg_net->port_bitmap, PORT_BITMAP_SIZE, port_number);
+	port_number = find_first_zero_bit(isg_net->port_bitmap, isg_net->max_sessions);
+	while (port_number < isg_net->max_sessions &&
+	       test_and_set_bit(port_number, isg_net->port_bitmap)) {
+		port_number = find_next_zero_bit(isg_net->port_bitmap, isg_net->max_sessions, port_number);
+	}
+	if (unlikely(port_number >= isg_net->max_sessions)) {
+		struct hlist_bl_head *h = &isg_net->hash[is->hash_key];
+		struct isg_net_stat *cnt;
+
+		printk_ratelimited(KERN_ERR "ipt_ISG: port bitmap exhausted, dropping session\n");
+		local_bh_disable();
+		hlist_bl_lock(h);
+		hlist_bl_del_init(&is->list);
+		hlist_bl_unlock(h);
+		local_bh_enable();
+		set_bit(ISG_IS_DYING, &is->info.flags);
+		cnt = this_cpu_ptr(isg_net->cnt);
+		cnt->dying++;
+		timer_setup(&is->timer, isg_session_timeout, 0);
+		mod_timer(&is->timer, jiffies + 2 * HZ);
+		return;
 	}
 	is->info.port_number = port_number;
 
@@ -1276,7 +1298,8 @@ static int isg_initialize(struct net *net) {
 	INIT_HLIST_HEAD(&isg_net->services);
 	rwlock_init(&isg_net->services_rw_lock);
 
-	isg_net->port_bitmap = bitmap_zalloc(PORT_BITMAP_SIZE, GFP_KERNEL);
+	isg_net->max_sessions = max_sessions;
+	isg_net->port_bitmap  = bitmap_zalloc(isg_net->max_sessions, GFP_KERNEL);
 	if (isg_net->port_bitmap == NULL) {
 		goto err;
 	}

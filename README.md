@@ -70,6 +70,28 @@ cd kernel
 sudo make install   # installs ipt_ISG.ko and both .so libs
 ```
 
+### Module parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `max_sessions` | `65536` | Maximum concurrent sessions. Each session consumes one bit in the port bitmap (32 KB per 262144 sessions). |
+| `nr_buckets` | `8192` | Hash table bucket count for session lookup. Increase proportionally with `max_sessions`. |
+| `session_check_interval` | `10` | Timer interval in seconds for session timeout checks. |
+| `tg_permit_action` | `0` | Netfilter action for permitted traffic: `0` = CONTINUE, `1` = ACCEPT. |
+| `tg_deny_action` | `0` | Netfilter action for denied traffic: `0` = DROP, `1` = CONTINUE. |
+
+To raise the session limit, pass parameters at load time:
+
+```bash
+modprobe ipt_ISG max_sessions=262144 nr_buckets=32768
+```
+
+Or persist in `/etc/modprobe.d/ipt_ISG.conf`:
+
+```
+options ipt_ISG max_sessions=262144 nr_buckets=32768
+```
+
 ---
 
 ## Usage
