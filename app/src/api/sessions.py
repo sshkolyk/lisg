@@ -120,20 +120,29 @@ def fetch_all(limit: int = 1000, offset: int = 0) -> list[dict]:
 
 def find_session(id_str: str) -> Optional[dict]:
     """Return the first session matching ip / mac / session_id, or None."""
-    sk  = isg.open_socket()
     arp = _arp_table()
+
+    # IP — kernel supports O(1) hash lookup when ipaddr is set in the request
+    if re.match(r'^\d{1,3}(\.\d{1,3}){3}$', id_str):
+        sk = isg.open_socket()
+        try:
+            rows, _ = isg.get_list(sk, {
+                'type':   isg.EVENT_SESS_GETLIST,
+                'ipaddr': isg.ip2long(id_str),
+            }, timeout=2)
+        finally:
+            sk.close()
+        for ev in rows:
+            if ev.get('ipaddr') == isg.ip2long(id_str):
+                return _ev_to_info(ev, arp)
+        return None
+
+    # Session-ID or MAC — no kernel-side index; need full scan
+    sk = isg.open_socket()
     try:
         rows, _ = isg.get_list(sk, {'type': isg.EVENT_SESS_GETLIST}, timeout=5)
     finally:
         sk.close()
-
-    # IP
-    if re.match(r'^\d{1,3}(\.\d{1,3}){3}$', id_str):
-        target = isg.ip2long(id_str)
-        for ev in rows:
-            if ev['ipaddr'] == target:
-                return _ev_to_info(ev, arp)
-        return None
 
     # Session-ID — exactly 16 hex chars (checked before MAC, which also
     # accepts bare hex; a 16-char session-id must not be read as a MAC).

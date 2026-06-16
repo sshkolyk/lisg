@@ -43,6 +43,7 @@
 #define	EVENT_SDESC_ADD       0x18
 #define	EVENT_SDESC_SWEEP_TC  0x19
 #define	EVENT_SERV_GETLIST    0x20
+#define	EVENT_SESS_GETTOTALS  0x21
 
 /* From Kernel to Userspace */
 #define	EVENT_SESS_CREATE  0x03
@@ -51,6 +52,7 @@
 #define	EVENT_SESS_STOP    0x08
 #define	EVENT_SESS_INFO    0x11
 #define	EVENT_SESS_COUNT   0x13
+#define	EVENT_SESS_TOTALS  0x22
 
 #define	EVENT_KERNEL_ACK  0x98
 #define	EVENT_KERNEL_NACK 0x99

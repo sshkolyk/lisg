@@ -28,6 +28,7 @@ EVENT_SERV_APPLY      = 0x17
 EVENT_SDESC_ADD       = 0x18
 EVENT_SDESC_SWEEP_TC  = 0x19
 EVENT_SERV_GETLIST    = 0x20
+EVENT_SESS_GETTOTALS  = 0x21
 
 # Events: kernel → userspace
 EVENT_SESS_CREATE = 0x03
@@ -36,6 +37,7 @@ EVENT_SESS_UPDATE = 0x07
 EVENT_SESS_STOP   = 0x08
 EVENT_SESS_INFO   = 0x11
 EVENT_SESS_COUNT  = 0x13
+EVENT_SESS_TOTALS = 0x22
 EVENT_KERNEL_ACK  = 0x98
 EVENT_KERNEL_NACK = 0x99
 
@@ -284,6 +286,50 @@ def send_event(sk: socket.socket, ev: dict, timeout: float = 10) -> dict:
     finally:
         sk.settimeout(None)
     return parse_event(data)
+
+
+def get_totals(sk: socket.socket, timeout: float = 2.0) -> tuple[dict | None, list]:
+    """
+    Send EVENT_SESS_GETTOTALS; return (totals_ev, top_sessions).
+
+    totals_ev is the EVENT_SESS_TOTALS dict (in_bytes/out_bytes),
+    or None if the kernel does not support this event (old module).
+    top_sessions is a list of EVENT_SESS_INFO dicts (top-N by traffic).
+    Raises OSError on socket error; returns (None, []) on timeout.
+    """
+    base = _blank()
+    base['type'] = EVENT_SESS_GETTOTALS
+    sk.sendto(_pack_nlmsg(pack_event(base), _portid(sk)), (0, 0))
+
+    msg_sz  = NL_HDR_LEN + IN_EVENT_MSG_LEN
+    totals  = None
+    top     = []
+    sk.settimeout(timeout)
+    try:
+        while True:
+            data = sk.recv(16384)
+            n    = len(data)
+            if n == NL_HDR_LEN:
+                _, nltype, *_ = _unpack_nlmsghdr(data)
+                if nltype == NLMSG_DONE:
+                    break
+                continue
+            if n < msg_sz or n % msg_sz:
+                continue
+            for i in range(n // msg_sz):
+                ev_parsed = parse_event(data[i * msg_sz:(i + 1) * msg_sz])
+                t = ev_parsed['type']
+                if t == EVENT_SESS_TOTALS:
+                    totals = ev_parsed
+                elif t == EVENT_SESS_INFO and ev_parsed.get('ipaddr'):
+                    top.append(ev_parsed)
+                if ev_parsed['nlhdr_type'] == NLMSG_DONE:
+                    return totals, top
+    except (socket.timeout, KeyboardInterrupt):
+        pass
+    finally:
+        sk.settimeout(None)
+    return totals, top
 
 
 def get_list(sk: socket.socket, ev: dict, timeout: float = 10) -> tuple[list, bool]:
