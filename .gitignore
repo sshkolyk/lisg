@@ -16,3 +16,4 @@ kernel/modules.order
 kernel/build.h
 kernel/Makefile
 /testing
+__pycache__
