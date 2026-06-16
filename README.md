@@ -2,7 +2,10 @@
 
 Fork of [vvfedorenko/lisg](https://github.com/vvfedorenko/lisg).
 
-Kernel code is original. Userspace rewritten from Perl to Python.
+Userspace rewritten from Perl to Python. Kernel module extended — see
+[Kernel changes](#kernel-changes) below. The tag **`compatible_kernel`**
+marks the last commit where the kernel module is unmodified from upstream
+(userspace-only changes only).
 
 ## Key changes
 
@@ -20,14 +23,26 @@ Kernel code is original. Userspace rewritten from Perl to Python.
    | GET | `/traffic/stream/{id}?interval=1.0` | SSE stream of per-session throughput (bps); interval 0.5–30 s; auth token accepted as `?token=` query param |
 
 4. `ISG.py monitor` — live traffic graph with hotkeys.
+5. `ISG.py monitor` (no arguments) — global system-wide monitor: total
+   IN/OUT throughput graph + top-10 sessions by traffic. Uses
+   `EVENT_SESS_GETTOTALS` (a single O(n) kernel pass returning ~2 KB)
+   instead of fetching the full session list every second.
 
 ---
 
-## Changes vs upstream
+## Kernel changes
+
+> **Note:** the kernel module in this fork is **not** identical to upstream.
+> If you need the unmodified kernel with only userspace changes, check out
+> the `compatible_kernel` tag.
 
 - Restored (rewritten from scratch) the match userspace library lost during recovery.
 - Linux kernel 4.19+ supported.
 - Replaced the global spinlock with per-object RW-locks and per-session spinlocks. *(Not tested; use at your own risk.)*
+- Added `EVENT_SESS_GETTOTALS` (0x21) / `EVENT_SESS_TOTALS` (0x22): a
+  single kernel pass that returns aggregate byte totals and the top-10
+  sessions by traffic volume. Required for the efficient global monitor;
+  **not present in upstream** or in the `compatible_kernel` tag.
 
 ## TODO
 
