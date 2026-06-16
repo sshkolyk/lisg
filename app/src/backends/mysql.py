@@ -36,7 +36,7 @@ class MySQLBackend(Backend):
         self._nas_ip = nas_ip
         self._nas_id = nas_id
         self._local  = threading.local()
-        self.label   = f'mysql {entry.host}:{entry.port}'
+        self.label   = f'mysql {entry.unix_socket or f"{entry.host}:{entry.port}"}'
 
     # ── DB connection ─────────────────────────────────────────────────────────
 
@@ -60,9 +60,7 @@ class MySQLBackend(Backend):
 
     def _connect(self):
         e = self._entry
-        return pymysql.connect(
-            host=e.host,
-            port=e.port,
+        kw = dict(
             user=e.user,
             password=e.password,
             database=e.database,
@@ -70,6 +68,12 @@ class MySQLBackend(Backend):
             cursorclass=pymysql.cursors.DictCursor,
             autocommit=True,
         )
+        if e.unix_socket:
+            kw['unix_socket'] = e.unix_socket
+        else:
+            kw['host'] = e.host
+            kw['port'] = e.port
+        return pymysql.connect(**kw)
 
     # ── retry helper ──────────────────────────────────────────────────────────
 

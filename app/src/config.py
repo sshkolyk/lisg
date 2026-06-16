@@ -41,11 +41,12 @@ class ServerEntry:
     timeout: int   = 5
 
     # MySQL connection (per-entry; allows different DB servers for auth/acct)
-    host:     str = ''
-    port:     int = 3306
-    user:     str = ''
-    password: str = ''
-    database: str = ''
+    host:        str = ''
+    port:        int = 3306
+    unix_socket: str = ''   # if set, used instead of host:port
+    user:        str = ''
+    password:    str = ''
+    database:    str = ''
 
     def host_port(self) -> tuple[str, int]:
         host, _, port = self.server.rpartition(':')
@@ -160,6 +161,7 @@ def load(path: str) -> Config:
                 timeout=int(entry.get('timeout', 5)),
                 host=entry.get('host', ''),
                 port=int(entry.get('port', 3306)),
+                unix_socket=entry.get('unix_socket', ''),
                 user=entry.get('user', ''),
                 password=str(entry.get('password', '')),
                 database=entry.get('database', ''),

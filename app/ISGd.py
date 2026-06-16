@@ -41,8 +41,8 @@ def _make_pool(cfg: Config, section: dict,
             from src.backends.radius import RadiusBackend
             pool.append(RadiusBackend(entry, cfg, nas_ip, nas_id, rad_dict))
         elif entry.type == 'mysql':
-            if not entry.host:
-                log.error('Pool entry %d type=mysql requires host/user/password/database', prio)
+            if not (entry.host or entry.unix_socket):
+                log.error('Pool entry %d type=mysql requires host (or unix_socket) + user/password/database', prio)
                 continue
             from src.backends.mysql import MySQLBackend
             pool.append(MySQLBackend(entry, cfg, nas_ip, nas_id))
