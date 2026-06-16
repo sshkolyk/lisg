@@ -116,14 +116,16 @@ cp -n config.yaml.example config.yaml
 cp -n tc.conf.example tc.conf
 ```
 
-Set the kernel Netlink receive buffer limit before starting the daemon — the
-default (212 KB) is too small when many sessions disconnect simultaneously and
-events overflow the buffer, causing `EVENT_SESS_CREATE` messages to be silently
-dropped (sessions stuck unapproved):
+Set the kernel Netlink receive buffer limit before starting the daemon.
+Each session event occupies ~700 bytes in the socket buffer (200-byte payload
+plus `sk_buff` overhead). With 65536 max sessions the peak burst is ~45 MB, so
+the default 212 KB causes `ENOBUFS` and silently drops `EVENT_SESS_CREATE`
+messages (sessions stuck unapproved). The daemon reads `rmem_max` at startup
+and requests that value as `SO_RCVBUF` (the kernel doubles it internally):
 
 ```bash
 # /etc/sysctl.d/99-isg.conf
-net.core.rmem_max = 16777216
+net.core.rmem_max = 67108864
 ```
 
 ```bash
@@ -146,6 +148,7 @@ Edit `config.yaml`, then run:
 ./app/ISG.py show_services <IP | Virtual# | Sess-ID>
 ./app/ISG.py clear <IP | Virtual# | Sess-ID>          # clear one session
 ./app/ISG.py clear_all                                # clear all sessions instantly
+./app/ISG.py clear_unapproved                         # clear only unapproved sessions
 ./app/ISG.py change_rate <IP | Virtual# | Sess-ID> <in_kbps> <out_kbps>
 ./app/ISG.py monitor <IP | Virtual# | Sess-ID>
 ```

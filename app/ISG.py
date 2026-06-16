@@ -28,6 +28,7 @@ Commands:
   monitor       [IP | Virtual# | Session-ID]  (no arg = total throughput view)
   clear         <IP | Virtual# | Session-ID>
   clear_all
+  clear_unapproved
   change_rate   <IP | Virtual# | Session-ID> <in_kbps> <out_kbps>
 
 Options:
@@ -220,6 +221,15 @@ def main():
                 isg.send_only(sk, {'type': isg.EVENT_SESS_CLEAR,
                                    'port_number': s['port_number']})
             print(f'Cleared {len(parent_sessions)} sessions')
+
+        elif len(args) == 1 and args[0] == 'clear_unapproved':
+            sessions, _ = isg.get_list(sk, {'type': isg.EVENT_SESS_GETLIST})
+            unapproved = [s for s in sessions
+                          if not (s.get('flags', 0) & (isg.IS_SERVICE | isg.IS_APPROVED_SESSION))]
+            for s in unapproved:
+                isg.send_only(sk, {'type': isg.EVENT_SESS_CLEAR,
+                                   'port_number': s['port_number']})
+            print(f'Cleared {len(unapproved)} unapproved sessions')
 
         elif len(args) in (1, 2) and args[0] == 'monitor':
             from src import monitor
