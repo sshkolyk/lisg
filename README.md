@@ -36,6 +36,42 @@ Kernel code is original. Userspace rewritten from Perl to Python.
 
 ---
 
+## Kernel module installation
+
+### With DKMS (recommended)
+
+DKMS rebuilds and reinstalls the module automatically on every kernel upgrade.
+
+```bash
+# 1. Copy source tree to the DKMS directory
+sudo cp -r kernel /usr/src/ipt_ISG-1.0
+
+# 2. Register, build, and install
+sudo dkms add    ipt_ISG/1.0
+sudo dkms build  ipt_ISG/1.0
+sudo dkms install ipt_ISG/1.0
+```
+
+After `dkms install` the iptables extensions (`libipt_ISG.so`, `libipt_isg.so`) are
+copied to the xtables directory automatically via `post_install.sh`.
+
+To remove:
+
+```bash
+sudo dkms remove ipt_ISG/1.0 --all
+sudo rm -rf /usr/src/ipt_ISG-1.0
+```
+
+### Manual (single kernel)
+
+```bash
+cd kernel
+./configure && make
+sudo make install   # installs ipt_ISG.ko and both .so libs
+```
+
+---
+
 ## Usage
 
 ### Session initiation and shaping
