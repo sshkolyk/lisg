@@ -251,7 +251,11 @@ def open_socket() -> socket.socket:
     # Perl avoids this by always using $$ (process PID) in the message header.
     portid = sk.getsockname()[0] or os.getpid()
     _portid_cache[sk.fileno()] = portid
-    sk.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2097152)
+    try:
+        rmem_max = int(open('/proc/sys/net/core/rmem_max').read())
+    except OSError:
+        rmem_max = 16777216
+    sk.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rmem_max)
     sk.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO,
                   struct.pack('ll', 5, 0))
     return sk
