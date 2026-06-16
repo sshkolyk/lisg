@@ -33,8 +33,10 @@ class ISGServer:
         self._stop      = stop
         aw = cfg.auth_workers
         bw = cfg.acct_workers
+        self._auth_nl      = isg.open_auth_socket()
+        self._auth_nl_lock = threading.Lock()
         self._auth_pool_ex = (ThreadPoolExecutor(max_workers=aw, thread_name_prefix='auth')
-                              if aw > 0 else None)
+                               if aw > 0 else None)
         self._acct_pool_ex = (ThreadPoolExecutor(max_workers=bw, thread_name_prefix='acct')
                               if bw > 0 else None)
 
@@ -124,13 +126,14 @@ class ISGServer:
         if result is None:
             log.error("All auth backends failed for '%s', session not approved", ip)
             return
-        sk = isg.open_socket()
+        sk = self._auth_nl
         try:
             self._apply_auth_result(result, ev, sk)
         except OSError as e:
             log.error("Netlink error applying auth result for '%s': %s", ip, e)
-        finally:
-            sk.close()
+            with self._auth_nl_lock:
+                if self._auth_nl is sk:
+                    self._auth_nl = isg.open_auth_socket()
 
     def _acct_thread(self, ev: dict) -> None:
         """All accounting backends receive the record (side by side)."""

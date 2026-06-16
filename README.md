@@ -94,6 +94,20 @@ cp -n config.yaml.example config.yaml
 cp -n tc.conf.example tc.conf
 ```
 
+Set the kernel Netlink receive buffer limit before starting the daemon — the
+default (212 KB) is too small when many sessions disconnect simultaneously and
+events overflow the buffer, causing `EVENT_SESS_CREATE` messages to be silently
+dropped (sessions stuck unapproved):
+
+```bash
+# /etc/sysctl.d/99-isg.conf
+net.core.rmem_max = 16777216
+```
+
+```bash
+sysctl -p /etc/sysctl.d/99-isg.conf
+```
+
 Edit `config.yaml`, then run:
 
 ```bash
