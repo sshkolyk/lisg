@@ -10,7 +10,7 @@ ISG_NETLINK_MAIN = 31
 NL_HDR_LEN       = 16
 NLMSG_ALIGNTO    = 4
 NLMSG_DONE       = 0x3
-IN_EVENT_MSG_LEN = 184
+IN_EVENT_MSG_LEN = 172
 
 # Events: userspace → kernel
 EVENT_LISTENER_REG    = 0x01
@@ -135,64 +135,100 @@ def pack_event(ev: dict) -> bytes:
     t = ev.get('type', 0)
 
     if t == EVENT_SDESC_ADD:
-        return (struct.pack('=I', t) + b'\x00' * 4
-                + _pad(ev.get('nehash_tc_name', b''), 32)
-                + _pad(ev.get('service_name', b''), 32)
-                + struct.pack('=B', ev.get('service_flags', 0))
-                + b'\x00' * 7)
+        return (
+            struct.pack("=I", t)
+            + _pad(ev.get("nehash_tc_name", b""), 32)
+            + _pad(ev.get("service_name", b""), 32)
+            + struct.pack("=B", ev.get("service_flags", 0))
+            + b"\x00" * 23          # a23
+        )
 
     if t == EVENT_NE_ADD_QUEUE:
-        return (struct.pack('=I', t) + b'\x00' * 4
-                + struct.pack('>II', ev.get('nehash_pfx', 0), ev.get('nehash_mask', 0))
-                + _pad(ev.get('nehash_tc_name', b''), 32))
+        return (
+            struct.pack("=I", t)
+            + struct.pack(">II",
+                          ev.get("nehash_pfx", 0),
+                          ev.get("nehash_mask", 0))
+            + _pad(ev.get("nehash_tc_name", b""), 32)
+            + b"\x00" * 48          # a48
+        )
 
-    # default: isg_session_info_in (144 bytes)
     return (
-        struct.pack('=I', t) + b'\x00' * 4
-        + _pad(ev.get('session_id', b''), 8)
-        + _pad(ev.get('cookie', b''), 32)
-        + struct.pack('>II', ev.get('ipaddr', 0), ev.get('nat_ipaddr', 0))
-        + b'\x00' * 8
-        + struct.pack('<I', ev.get('flags', 0)) + b'\x00' * 4
-        + struct.pack('=8I',
-            ev.get('port_number', 0), ev.get('alive_interval', 0),
-            ev.get('idle_timeout', 0), ev.get('max_duration', 0),
-            ev.get('in_rate', 0), ev.get('in_burst', 0),
-            ev.get('out_rate', 0), ev.get('out_burst', 0))
-        + _pad(ev.get('service_name', b''), 32)
-        + struct.pack('=B', ev.get('flags_op', 0)) + b'\x00' * 7
+        struct.pack("=I", t)
+        + _pad(ev.get("session_id", b""), 8)
+        + _pad(ev.get("cookie", b""), 32)
+        + struct.pack(">II",
+                      ev.get("ipaddr", 0),
+                      ev.get("nat_ipaddr", 0))
+        + b"\x00" * 6                      # H12
+        + struct.pack("<H", ev.get("flags", 0))   # v
+        + struct.pack(
+            "=8I",
+            ev.get("port_number", 0),
+            ev.get("alive_interval", 0),
+            ev.get("idle_timeout", 0),
+            ev.get("max_duration", 0),
+            ev.get("in_rate", 0),
+            ev.get("in_burst", 0),
+            ev.get("out_rate", 0),
+            ev.get("out_burst", 0),
+        )
+        + _pad(ev.get("service_name", b""), 32)
+        + struct.pack("=B", ev.get("flags_op", 0))
     )
 
 
 def unpack_event(data: bytes) -> dict:
     """Parse isg_out_event payload (184 bytes, NL header already stripped)."""
     if len(data) < IN_EVENT_MSG_LEN:
-        raise ValueError(f'ISG event payload too short: {len(data)}')
-
+       raise ValueError(f'ISG event payload too short: {len(data)}')
     o = 0
-    ev_type, = struct.unpack_from('=I', data, o); o += 8  # +4 pad
 
-    sid_w0, sid_w1 = struct.unpack_from('=II', data, o); o += 8
-    session_id = f'{sid_w1:08X}{sid_w0:08X}'
+    ev_type, = struct.unpack_from('=I', data, o)
+    o += 4
 
-    cookie = data[o:o+32].rstrip(b'\x00').decode('utf-8', errors='replace') or None; o += 32
-    ipaddr, nat_ipaddr = struct.unpack_from('>II', data, o); o += 8
-    macaddr = data[o:o+6].hex(); o += 8  # 6 mac + 2 pad
+    sid_hi, sid_lo = struct.unpack_from('=II', data, o)
+    o += 8
+    session_id = f'{sid_hi:08X}{sid_lo:08X}'
 
-    flags, = struct.unpack_from('<I', data, o); o += 8  # 4 flags + 4 unused
+    cookie = data[o:o+32].rstrip(b'\x00').decode(errors='replace') or None
+    o += 32
 
-    (port_number, alive_interval, idle_timeout, max_duration,
-     in_rate, in_burst, out_rate, out_burst) = struct.unpack_from('=8I', data, o); o += 32
+    ipaddr, nat_ipaddr = struct.unpack_from('>II', data, o)
+    o += 8
 
-    duration, _ = struct.unpack_from('=Ii', data, o); o += 8
+    macaddr = data[o:o+6].hex()
+    o += 6
+
+    flags, = struct.unpack_from("<H", data, o)
+    o += 2
+
+    (port_number,
+        alive_interval,
+        idle_timeout,
+        max_duration,
+        in_rate,
+        in_burst,
+        out_rate,
+        out_burst) = struct.unpack_from("=8I", data, o)
+    o += 32
+
+    duration, = struct.unpack_from("=I", data, o)
+    o += 4
+
+    trash, = struct.unpack_from("=i", data, o)
+    o += 4
 
     (in_pk_lo,  in_pk_hi,
      in_by_lo,  in_by_hi,
      out_pk_lo, out_pk_hi,
      out_by_lo, out_by_hi,
-     psid_lo,   psid_hi) = struct.unpack_from('=10I', data, o); o += 40
+     psid_lo,   psid_hi) = struct.unpack_from('=10I', data, o)
+    o += 40
 
-    service_name = data[o:o+32].rstrip(b'\x00').decode('utf-8', errors='replace') or None
+    service_name = data[o:o+32].split(b"\0", 1)[0].decode(errors="replace") or None
+
+    assert o + 32 == 172
 
     return {
         'type':              ev_type,

@@ -439,10 +439,9 @@ def run_global(sk, interval: float = 1.0, no_color: bool = False,
     sys.stdout.write('\033[?25l')
     in_hist:    deque = deque(maxlen=400)
     out_hist:   deque = deque(maxlen=400)
-    prev_total: tuple | None = None   # (in_bytes, out_bytes) from last GETTOTALS
-    prev_top:   dict  = {}            # {ipaddr: (in_bytes, out_bytes)}
+    prev_bytes: dict  = {}     # {ipaddr: (in_bytes, out_bytes)}
     prev_t:     float = 0.0
-    top_rates:  list  = []            # [(ipaddr, (in_bps, out_bps))]
+    top_rates:  list  = []     # [(ipaddr, (in_bps, out_bps))]
     counts:     dict | None = None
     backends:   dict | None = None
     status_msg: str   = ''
@@ -477,38 +476,40 @@ def run_global(sk, interval: float = 1.0, no_color: bool = False,
             except OSError:
                 pass
 
-            # ── totals + top-N via single EVENT_SESS_GETTOTALS call ──────────
+            # Per-session byte deltas → aggregate throughput
+            new_prev: dict  = {}
+            cur_rates: dict = {}
+            total_in = total_out = 0.0
             try:
-                totals_ev, top_sess = isg.get_totals(sk, timeout=2.0)
-            except OSError:
-                totals_ev, top_sess = None, []
-
-            if totals_ev is not None:
-                ib_total = totals_ev['in_bytes']
-                ob_total = totals_ev['out_bytes']
-                if prev_total is not None and prev_t > 0:
-                    dt = max(t - prev_t, 1e-6)
-                    in_hist.append(max(ib_total - prev_total[0], 0) * 8 / dt)
-                    out_hist.append(max(ob_total - prev_total[1], 0) * 8 / dt)
-                prev_total = (ib_total, ob_total)
-
-                # compute per-session rates for top-N display
-                new_top: dict = {}
-                cur_rates: dict = {}
-                for r in top_sess:
+                rows, _ = isg.get_list(sk, {'type': isg.EVENT_SESS_GETLIST}, timeout=2)
+                for r in rows:
+                    if r['type'] != isg.EVENT_SESS_INFO or not r.get('ipaddr'):
+                        continue
+                    if r.get('flags', 0) & isg.IS_SERVICE:
+                        continue
                     ip = r['ipaddr']
                     ib, ob = r['in_bytes'], r['out_bytes']
-                    new_top[ip] = (ib, ob)
-                    if prev_t > 0 and ip in prev_top:
-                        dt2  = max(t - prev_t, 1e-6)
-                        ibps = max(ib - prev_top[ip][0], 0) * 8 / dt2
-                        obps = max(ob - prev_top[ip][1], 0) * 8 / dt2
-                        cur_rates[ip] = (ibps, obps)
+                    new_prev[ip] = (ib, ob)
+                    if prev_t > 0 and ip in prev_bytes:
+                        dt   = max(t - prev_t, 1e-6)
+                        ibps = max(ib - prev_bytes[ip][0], 0) * 8 / dt
+                        obps = max(ob - prev_bytes[ip][1], 0) * 8 / dt
+                        total_in  += ibps
+                        total_out += obps
+                        if ibps + obps > 0:
+                            cur_rates[ip] = (ibps, obps)
+            except OSError:
+                pass
+
+            if prev_t > 0:
+                in_hist.append(total_in)
+                out_hist.append(total_out)
                 top_rates = sorted(cur_rates.items(),
                                    key=lambda kv: kv[1][0] + kv[1][1],
-                                   reverse=True)
-                prev_top = new_top
-                prev_t = t
+                                   reverse=True)[:10]
+
+            prev_bytes = new_prev
+            prev_t = t
 
             if status_path:
                 try:
@@ -648,3 +649,4 @@ def _render_global(counts: dict | None, in_hist: deque, out_hist: deque,
 
     sys.stdout.write('\n'.join(out))
     sys.stdout.flush()
+
