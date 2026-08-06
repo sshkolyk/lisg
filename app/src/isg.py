@@ -235,7 +235,8 @@ _portid_cache: dict = {}
 def open_auth_socket() -> socket.socket:
     """Minimal send-only Netlink socket for auth worker threads."""
     sk = socket.socket(AF_NETLINK, socket.SOCK_RAW, ISG_NETLINK_MAIN)
-    sk.bind((0, 0))
+    # If bind rmem growth until overflow
+    # sk.bind((0, 0))
     portid = sk.getsockname()[0] or os.getpid()
     _portid_cache[sk.fileno()] = portid
     sk.setsockopt(socket.SOL_SOCKET, socket.SO_SNDTIMEO,
