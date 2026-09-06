@@ -2,47 +2,82 @@
 
 Fork of [vvfedorenko/lisg](https://github.com/vvfedorenko/lisg).
 
-Userspace rewritten from Perl to Python. Kernel module extended — see
-[Kernel changes](#kernel-changes) below. The tag **`compatible_kernel`**
-marks the last commit where the kernel module is unmodified from upstream
-(userspace-only changes only).
+Userspace rewritten from Perl to Python. The kernel module is extended and
+**not identical to upstream** — see [Kernel changes](#kernel-changes) below.
 
-## Key changes
+## Branches
 
-1. Added support for newer RADIUS (Message-Authenticator attribute).
-2. MySQL backend support alongside RADIUS.
-3. Optional REST API (requires `fastapi` + `uvicorn`):
+| Branch | Kernel module | Use when |
+|---|---|---|
+| `master` | modified: locking rewrite, lock-free nehash lookup, `EVENT_SESS_GETTOTALS`; 184-byte netlink event struct | you build `ipt_ISG.ko` from this repo |
+| `compatible_kernel` | unmodified from upstream | you want only the Python userspace on an upstream kernel; it tracks userspace changes without the kernel modifications |
+| `netlink_packet_172` | older module build, 172-byte netlink event struct | your loaded `ipt_ISG.ko` predates the 184-byte event layout |
 
-   | Method | Path | Description |
-   |--------|------|-------------|
-   | GET | `/status` | session counts, uptime, backend list |
-   | GET | `/sessions?limit=&offset=` | paginated session list |
-   | GET | `/sessions/{id}` | id = ip \| mac \| session_id |
-   | PUT | `/sessions/{id}` | body: `{in_kbps, out_kbps, approve, block}` |
-   | GET | `/sessions/{id}/arping` | ARP-probe the session's IP |
-   | GET | `/traffic/stream/{id}?interval=1.0` | SSE stream of per-session throughput (bps); interval 0.5–30 s; auth token accepted as `?token=` query param |
+## Changes from upstream
 
-4. `ISG.py monitor` — live traffic graph with hotkeys.
-5. `ISG.py monitor` (no arguments) — global system-wide monitor: total
-   IN/OUT throughput graph + top-10 sessions by traffic. Uses
-   `EVENT_SESS_GETTOTALS` (a single O(n) kernel pass returning ~2 KB)
-   instead of fetching the full session list every second.
+### Userspace
+
+- Full Perl → Python rewrite of the daemon (`ISGd.pl` → `ISGd.py`) and CLI (`ISG.pl` → `ISG.py`).
+- Newer RADIUS servers supported (Message-Authenticator attribute).
+- `ISG.py` caches its Netlink socket across sub-commands.
+
+### Backends
+
+- MySQL auth/accounting pool alongside RADIUS; each pool entry carries its own connection parameters, so auth and accounting can target different servers.
+- MySQL connections over a UNIX socket (`unix_socket`) as an alternative to `host:port`.
+- Lost-connection detection with one automatic reconnect + retry per query.
+- Connection recycling after `conn_max_age` seconds (default 3600).
+- Auth and accounting backends run on dedicated thread pools.
+- Per-backend circuit breaker: opens after 3 consecutive errors and skips the backend for a cool-off period.
+- Per-backend throughput/rate statistics.
+
+### REST API (optional, `fastapi` + `uvicorn`)
+
+Auth (config `api` block): `Authorization: Bearer <api.token>` header on every
+request (empty `api.token` disables the check); SSE clients that cannot set
+headers may pass `?token=` instead. Optional `api.access_list` is a CIDR
+allow-list on the client IP (empty = any). Rejections: `401` (bad/missing
+token), `403` (IP not in the list).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/status` | session counts, uptime, per-backend status (incl. circuit-breaker state) |
+| GET | `/sessions?limit=&offset=` | paginated session list |
+| GET | `/sessions/{id}` | id = ip \| mac \| session_id |
+| PUT | `/sessions/{id}` | body: `{in_kbps, out_kbps, approve, block}` |
+| GET | `/sessions/{id}/arping` | ARP-probe the session's IP |
+| GET | `/traffic/stream/{id}?interval=1.0` | SSE stream of per-session throughput (bps); interval 0.5–30 s; auth token accepted as `?token=` query param |
+
+### CLI and monitor
+
+- `ISG.py monitor <id>` — live per-session traffic graph with hotkeys: change shaper rate, block, approve.
+- `ISG.py monitor` (no argument) — global monitor: total IN/OUT throughput graph + top-10 sessions by traffic. Uses `EVENT_SESS_GETTOTALS` (one O(n) kernel pass, ~2 KB) instead of pulling the full session list every second.
+- `ISG.py clear_all` — clear every session at once.
+- `ISG.py clear_unapproved` — clear only unapproved sessions.
+
+### Ops and packaging
+
+- DKMS packaging; `post_install.sh` copies the iptables extensions (`libipt_ISG.so`, `libipt_isg.so`) into the xtables directory on install.
+- systemd unit (`contrib/lisg.service`).
+- The daemon sets `SO_RCVBUF` from `net.core.rmem_max` at startup to avoid `ENOBUFS` drops of session events (see [Usage](#daemon-and-isgpy)).
+- `max_sessions` / `nr_buckets` raisable via module parameters.
 
 ---
 
 ## Kernel changes
 
-> **Note:** the kernel module in this fork is **not** identical to upstream.
-> If you need the unmodified kernel with only userspace changes, check out
-> the `compatible_kernel` tag.
+> **Warning:** the kernel module in this fork is **not** identical to upstream
+> and has **not been tested in production — use at your own risk**. For the
+> unmodified upstream kernel with only the Python userspace changes, use the
+> `compatible_kernel` branch.
 
-- Restored (rewritten from scratch) the match userspace library lost during recovery.
 - Linux kernel 4.19+ supported.
-- Replaced the global spinlock with per-object RW-locks and per-session spinlocks. *(Not tested; use at your own risk.)*
-- Added `EVENT_SESS_GETTOTALS` (0x21) / `EVENT_SESS_TOTALS` (0x22): a
-  single kernel pass that returns aggregate byte totals and the top-10
-  sessions by traffic volume. Required for the efficient global monitor;
-  **not present in upstream** or in the `compatible_kernel` tag.
+- Restored (rewritten from scratch) the `libipt_isg` match userspace library lost during recovery.
+- Global spinlock replaced with per-object RW-locks and per-session spinlocks.
+- nehash traffic-class lookup converted to lock-free RCU on the packet path.
+- Added `EVENT_SESS_GETTOTALS` (0x21) / `EVENT_SESS_TOTALS` (0x22): a single
+  kernel pass returning aggregate byte totals and the top-10 sessions by
+  traffic volume. Required for the global monitor; not present in upstream.
 
 ## TODO
 
